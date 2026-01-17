@@ -23,19 +23,58 @@ warnings.filterwarnings('ignore')
 class PriceNewsDataset(Dataset):
     """가격과 뉴스 데이터를 결합한 데이터셋"""
     
+    # 지원되는 모델과 임베딩 차원
+    MODEL_CONFIGS = {
+        'fine5': {
+            'name': 'intfloat/e5-mistral-7b-instruct',
+            'embedding_dim': 4096,
+            'description': 'Fin-E5 - 최고 성능 금융 임베딩 모델 (16GB+ GPU 필요, Colab 권장)'
+        },
+        'finbert': {
+            'name': 'ProsusAI/finbert',
+            'embedding_dim': 768,
+            'description': 'FinBERT - 금융 텍스트에 최적화된 모델 (권장)'
+        },
+        'distilbert': {
+            'name': 'distilbert-base-uncased',
+            'embedding_dim': 768,
+            'description': 'DistilBERT - 더 빠르고 작은 모델'
+        },
+        'bert': {
+            'name': 'bert-base-uncased',
+            'embedding_dim': 768,
+            'description': 'BERT - 범용 모델'
+        },
+        'roberta': {
+            'name': 'roberta-base',
+            'embedding_dim': 768,
+            'description': 'RoBERTa - 개선된 BERT'
+        }
+    }
+    
     def __init__(self, price_data: pd.DataFrame, news_data: List[Dict], 
-                 sequence_length: int = 60, prediction_length: int = 1):
+                 sequence_length: int = 60, prediction_length: int = 1,
+                 device: Optional[torch.device] = None,
+                 embedding_model: str = 'finbert'):
         """
         Args:
             price_data: 시계열 가격 데이터 (datetime, open, high, low, close, volume)
             news_data: 뉴스 데이터 리스트 [{timestamp, title, content, sentiment}, ...]
             sequence_length: 입력 시퀀스 길이 (과거 몇 개의 시간 단위를 볼지)
             prediction_length: 예측할 미래 길이
+            device: GPU/CPU 장치 (None이면 자동 감지)
+            embedding_model: 사용할 임베딩 모델 ('fine5', 'finbert', 'distilbert', 'bert', 'roberta')
         """
         self.sequence_length = sequence_length
         self.prediction_length = prediction_length
         self.price_data = price_data.sort_values('datetime').reset_index(drop=True)
         self.news_data = sorted(news_data, key=lambda x: x['timestamp'])
+        
+        # 장치 설정
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = device
         
         # 가격 데이터 정규화
         self.price_mean = self.price_data[['open', 'high', 'low', 'close', 'volume']].mean()
@@ -43,10 +82,35 @@ class PriceNewsDataset(Dataset):
         self.normalized_prices = (self.price_data[['open', 'high', 'low', 'close', 'volume']] 
                                   - self.price_mean) / (self.price_std + 1e-8)
         
-        # 뉴스 임베딩을 위한 토크나이저 (FinBERT 또는 일반 BERT 사용)
-        self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
-        self.news_model = AutoModel.from_pretrained('bert-base-uncased')
-        self.news_model.eval()
+        # 임베딩 모델 설정
+        embedding_model = embedding_model.lower()
+        if embedding_model not in self.MODEL_CONFIGS:
+            print(f"⚠ 경고: '{embedding_model}' 모델을 찾을 수 없습니다. 'finbert'를 사용합니다.")
+            embedding_model = 'finbert'
+        
+        config = self.MODEL_CONFIGS[embedding_model]
+        model_name = config['name']
+        self.embedding_dim = config['embedding_dim']
+        
+        print(f"📝 임베딩 모델 로딩: {config['description']}")
+        print(f"   모델: {model_name}")
+        
+        # 뉴스 임베딩을 위한 모델 로드
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            # Fin-E5는 Instruct 모델이지만 AutoModel로 임베딩 추출 가능
+            self.news_model = AutoModel.from_pretrained(model_name)
+            self.news_model.to(self.device)
+            self.news_model.eval()
+            print(f"✓ 모델 로드 완료 (임베딩 차원: {self.embedding_dim})")
+        except Exception as e:
+            print(f"⚠ 경고: {model_name} 로드 실패: {e}")
+            print("   'bert-base-uncased'로 대체합니다.")
+            self.tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+            self.news_model = AutoModel.from_pretrained('bert-base-uncased')
+            self.news_model.to(self.device)
+            self.news_model.eval()
+            self.embedding_dim = 768
         
         # 뉴스 데이터를 시간별로 그룹화
         self.news_by_time = self._group_news_by_time()
@@ -64,7 +128,7 @@ class PriceNewsDataset(Dataset):
     def _get_news_embedding(self, news_list: List[Dict]) -> torch.Tensor:
         """뉴스 리스트의 평균 임베딩 계산"""
         if not news_list:
-            return torch.zeros(768)  # BERT base의 hidden size
+            return torch.zeros(self.embedding_dim, device=self.device)
         
         texts = [f"{n.get('title', '')} {n.get('content', '')[:200]}" for n in news_list]
         embeddings = []
@@ -73,11 +137,15 @@ class PriceNewsDataset(Dataset):
             for text in texts:
                 inputs = self.tokenizer(text, return_tensors='pt', truncation=True, 
                                        max_length=128, padding='max_length')
+                # 입력을 GPU로 이동
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self.news_model(**inputs)
                 # [CLS] 토큰의 임베딩 사용
                 embeddings.append(outputs.last_hidden_state[0, 0, :])
         
-        return torch.stack(embeddings).mean(dim=0)
+        result = torch.stack(embeddings).mean(dim=0)
+        # CPU로 이동 (DataLoader가 CPU에서 작동하므로)
+        return result.cpu()
     
     def __len__(self):
         return len(self.price_data) - self.sequence_length - self.prediction_length + 1
@@ -186,11 +254,39 @@ class PriceNewsGenerator(nn.Module):
 class StockPriceGenerator:
     """주식/코인 가격 생성기 메인 클래스"""
     
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_path: Optional[str] = None, embedding_model: str = 'finbert'):
+        """
+        Args:
+            model_path: 저장된 모델 경로 (None이면 새로 생성)
+            embedding_model: 사용할 임베딩 모델 ('fine5', 'finbert', 'distilbert', 'bert', 'roberta')
+                             - 'fine5': 최고 성능 금융 임베딩 (16GB+ GPU 필요, Colab 권장)
+                             - 'finbert': 금융 텍스트에 최적화 (권장, 기본값)
+                             - 'distilbert': 더 빠르고 작은 모델
+                             - 'bert': 범용 BERT 모델
+                             - 'roberta': 개선된 BERT
+        """
         self.model = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.price_mean = None
         self.price_std = None
+        self.embedding_model = embedding_model.lower()
+        
+        # GPU 정보 출력
+        if torch.cuda.is_available():
+            print(f"✓ GPU 감지됨: {torch.cuda.get_device_name(0)}")
+            print(f"  CUDA 버전: {torch.version.cuda}")
+            print(f"  GPU 메모리: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        else:
+            print("⚠ GPU를 사용할 수 없습니다. CPU로 실행합니다.")
+            print("  더 빠른 학습을 위해 Google Colab 사용을 고려해보세요.")
+        
+        # 사용 가능한 모델 목록 출력
+        if self.embedding_model in PriceNewsDataset.MODEL_CONFIGS:
+            config = PriceNewsDataset.MODEL_CONFIGS[self.embedding_model]
+            print(f"📝 임베딩 모델: {config['description']}")
+        else:
+            print(f"⚠ 경고: '{embedding_model}' 모델을 찾을 수 없습니다. 'finbert'를 사용합니다.")
+            self.embedding_model = 'finbert'
         
         if model_path:
             self.load_model(model_path)
@@ -328,16 +424,28 @@ class StockPriceGenerator:
     def train(self, price_data: pd.DataFrame, news_data: List[Dict],
               epochs: int = 50, batch_size: int = 32, lr: float = 0.001):
         """모델 학습"""
+        print(f"장치 정보: {self.device}")
+        if torch.cuda.is_available():
+            print(f"GPU 사용 가능: {torch.cuda.get_device_name(0)}")
+            print(f"GPU 메모리: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        else:
+            print("GPU를 사용할 수 없습니다. CPU로 학습합니다.")
+            print("더 빠른 학습을 위해 Google Colab 사용을 고려해보세요 (설정 방법은 README 참조)")
+        
         print("데이터셋 생성 중...")
-        dataset = PriceNewsDataset(price_data, news_data)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataset = PriceNewsDataset(price_data, news_data, device=self.device, 
+                                   embedding_model=self.embedding_model)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
+                               num_workers=0 if self.device.type == 'cuda' else 2)
         
         # 정규화 파라미터 저장
         self.price_mean = dataset.price_mean
         self.price_std = dataset.price_std
         
-        # 모델 초기화
-        self.model = PriceNewsGenerator().to(self.device)
+        # 모델 초기화 (임베딩 차원을 데이터셋에서 가져옴)
+        self.model = PriceNewsGenerator(
+            news_embedding_dim=dataset.embedding_dim
+        ).to(self.device)
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         criterion = nn.MSELoss()
         
@@ -382,7 +490,8 @@ class StockPriceGenerator:
         current_seq = torch.FloatTensor(normalized.values[-60:]).unsqueeze(0).to(self.device)
         
         # 뉴스 임베딩 계산
-        dataset = PriceNewsDataset(price_history, news_data)
+        dataset = PriceNewsDataset(price_history, news_data, device=self.device,
+                                   embedding_model=self.embedding_model)
         news_emb = dataset._get_news_embedding(news_data).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
@@ -404,21 +513,33 @@ class StockPriceGenerator:
     
     def save_model(self, path: str):
         """모델 저장"""
+        # 임베딩 차원 가져오기
+        embedding_dim = self.model.news_projection.in_features if self.model else 768
         torch.save({
             'model_state_dict': self.model.state_dict(),
             'price_mean': self.price_mean,
-            'price_std': self.price_std
+            'price_std': self.price_std,
+            'embedding_model': self.embedding_model,
+            'embedding_dim': embedding_dim
         }, path)
         print(f"모델이 저장되었습니다: {path}")
     
     def load_model(self, path: str):
         """모델 로드"""
         checkpoint = torch.load(path, map_location=self.device)
-        self.model = PriceNewsGenerator().to(self.device)
+        
+        # 저장된 임베딩 모델 정보 사용 (없으면 기본값)
+        if 'embedding_model' in checkpoint:
+            self.embedding_model = checkpoint['embedding_model']
+        embedding_dim = checkpoint.get('embedding_dim', 768)
+        
+        self.model = PriceNewsGenerator(news_embedding_dim=embedding_dim).to(self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.price_mean = checkpoint['price_mean']
         self.price_std = checkpoint['price_std']
         print(f"모델이 로드되었습니다: {path}")
+        if 'embedding_model' in checkpoint:
+            print(f"  임베딩 모델: {checkpoint['embedding_model']}")
 
 
 def main():

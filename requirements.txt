@@ -7,3 +7,9 @@ cryptography>=3.3.2
 requests>=2.31.0
 streamlit>=1.28.0
 plotly>=5.17.0
+
+# GPU 지원 (선택사항):
+# CPU만 사용하는 경우: 위의 torch 설치로 충분합니다
+# GPU 사용 시 (CUDA 11.8): pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# GPU 사용 시 (CUDA 12.1): pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Google Colab 사용 시: GOOGLE_COLAB_SETUP.md 참조
