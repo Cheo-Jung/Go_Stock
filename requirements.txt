@@ -1,0 +1,9 @@
+torch>=2.0.0
+transformers>=4.30.0
+pandas>=2.0.0
+numpy>=1.24.0
+yfinance>=1.0.0  # Python 3.10+ supports latest yfinance
+cryptography>=3.3.2
+requests>=2.31.0
+streamlit>=1.28.0
+plotly>=5.17.0
