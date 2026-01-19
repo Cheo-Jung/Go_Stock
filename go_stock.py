@@ -52,6 +52,20 @@ if any(not os.getenv(k) for k in _want):
         except Exception:
             pass
         break
+# Colab: 시크릿(userdata)에서 로드 — .env 없이 사용
+try:
+    from google.colab import userdata
+    for k in _want:
+        if os.getenv(k):
+            continue
+        try:
+            v = userdata.get(k)
+            if v:
+                os.environ[k] = str(v).strip()
+        except Exception:
+            pass
+except ImportError:
+    pass
 
 
 class PriceNewsDataset(Dataset):
