@@ -20,58 +20,38 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# .env 파일에서 API 키 로드 (python-dotenv 설치 시)
-# 스크립트 위치 기준으로 .env 찾기 (실행 경로에 상관없이 동작)
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-
-def _load_env_fallback():
-    """load_dotenv가 안 될 때 .env 직접 파싱 (BOM/인코딩/\\r 대비). Colab: /content, cwd도 확인."""
-    want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
-    if all(os.getenv(k) for k in want):
-        return
-    _bom = chr(0xFEFF)
-    paths = [
-        _env_path,
-        '/content/.env',  # Google Colab 기본
-        os.path.join(os.getcwd(), '.env'),
-    ]
-    for p in paths:
-        if not p or not os.path.isfile(p):
-            continue
-        raw = None
-        for enc in ('utf-8-sig', 'utf-8', 'cp949', 'latin-1'):
-            try:
-                with open(p, 'r', encoding=enc) as f:
-                    raw = f.read()
-                break
-            except Exception:
-                continue
-        if raw is None:
-            continue
-        for line in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
-            line = line.strip().replace(_bom, '')
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            k, v = line.split('=', 1)
-            k = k.strip().replace(_bom, '').replace('\r', '').strip()
-            v = v.strip().strip('"').strip("'").replace('\r', '').strip()
-            if k in want and not os.getenv(k) and v:
-                os.environ[k] = v
-        if all(os.getenv(k) for k in want):
-            break
-
+# .env에서 API 키 로드 (NEWSAPI_KEY, ALPHAVANTAGE_API_KEY, FINNHUB_API_KEY)
+_env_paths = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'),
+    '/content/.env',
+    os.path.join(os.getcwd(), '.env'),
+]
 try:
     from dotenv import load_dotenv
-    load_dotenv(_env_path)
-    load_dotenv()
-    # Colab: 업로드한 .env가 /content 또는 cwd에 있는 경우
-    for p in ('/content/.env', os.path.join(os.getcwd(), '.env')):
-        if p and p != _env_path and os.path.isfile(p):
+    for p in _env_paths:
+        if p and os.path.isfile(p):
             load_dotenv(p)
-            break
 except ImportError:
     pass
-_load_env_fallback()
+# load_dotenv 실패 시 직접 파싱
+_want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
+if any(not os.getenv(k) for k in _want):
+    for p in _env_paths:
+        if not p or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding='utf-8-sig') as f:
+                for line in f:
+                    s = line.strip()
+                    if not s or s.startswith('#') or '=' not in s:
+                        continue
+                    k, v = s.split('=', 1)
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k in _want and v and not os.getenv(k):
+                        os.environ[k] = v
+        except Exception:
+            pass
+        break
 
 
 class PriceNewsDataset(Dataset):

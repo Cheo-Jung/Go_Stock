@@ -5,46 +5,29 @@
 import os
 import sys
 
-# .env 로드 (스크립트/프로젝트 폴더 기준)
+# .env 로드
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 _env_path = os.path.join(_script_dir, '.env')
-
-def _load_env_fallback():
-    """load_dotenv가 안 먹힐 때 .env를 직접 파싱 (BOM/인코딩/\\r 대비)"""
-    want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
-    if all(os.getenv(k) for k in want):
-        return
-    if not os.path.isfile(_env_path):
-        return
-    _bom = chr(0xFEFF)
-    raw = None
-    for enc in ('utf-8-sig', 'utf-8', 'cp949', 'latin-1'):
-        try:
-            with open(_env_path, 'r', encoding=enc) as f:
-                raw = f.read()
-            break
-        except Exception:
-            continue
-    if raw is None:
-        return
-    for line in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
-        line = line.strip().replace(_bom, '')
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        k, v = line.split('=', 1)
-        k = k.strip().replace(_bom, '').replace('\r', '').strip()
-        v = v.strip().strip('"').strip("'").replace('\r', '').strip()
-        if k in want and not os.getenv(k) and v:
-            os.environ[k] = v
-
 try:
     from dotenv import load_dotenv
     load_dotenv(_env_path)
     load_dotenv()
 except ImportError:
     pass
-# dotenv가 .env를 못 읽었을 수 있으므로 한 번 더 시도
-_load_env_fallback()
+_want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
+if any(not os.getenv(k) for k in _want) and os.path.isfile(_env_path):
+    try:
+        with open(_env_path, encoding='utf-8-sig') as f:
+            for line in f:
+                s = line.strip()
+                if not s or s.startswith('#') or '=' not in s:
+                    continue
+                k, v = s.split('=', 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k in _want and v and not os.getenv(k):
+                    os.environ[k] = v
+    except Exception:
+        pass
 
 def _mask(s):
     if not s or len(s) < 5:
