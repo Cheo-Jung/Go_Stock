@@ -15,18 +15,22 @@
 
 ---
 
-## 🚀 빠른 시작 (yfinance - 기본값)
+## 🚀 빠른 시작
 
-**가장 간단한 방법**: API 키 없이 바로 사용 가능
+### 모든 소스 한번에 (날짜별 학습 권장) — `news_source='all'`
+
+yfinance + **API 키가 설정된** NewsAPI / Alpha Vantage / Finnhub를 **전부** 사용합니다.  
+결과를 **날짜순 정렬**하고, 같은 날·비슷한 제목은 **중복 제거**합니다.
 
 ```python
-from go_stock import StockPriceGenerator
+# all: 사용 가능한 소스 전부 병합, 날짜순·중복 제거 (학습용 권장)
+news_data = generator.collect_news_data('BTC-USD', days=365, news_source='all')
+```
 
-generator = StockPriceGenerator()
+### yfinance만 (기본값, API 키 불필요)
 
-# yfinance 사용 (기본값, API 키 불필요)
+```python
 news_data = generator.collect_news_data('BTC-USD', days=30, news_source='yfinance')
-print(f"수집된 뉴스: {len(news_data)}개")
 ```
 
 ---

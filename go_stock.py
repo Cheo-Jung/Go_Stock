@@ -465,35 +465,71 @@ class StockPriceGenerator:
         Args:
             symbol: 종목 심볼 (예: 'BTC-USD', 'AAPL')
             days: 수집할 일수
-            news_source: 뉴스 소스 ('yfinance', 'newsapi', 'alphavantage', 'finnhub')
+            news_source: 'yfinance' | 'newsapi' | 'alphavantage' | 'finnhub' | 'all'
+                - 'all': API 키 있는 소스 + yfinance 전부 사용, 날짜순 정렬·중복 제거 후 반환
         
         Returns:
-            뉴스 데이터 리스트 [{timestamp, title, content, sentiment}, ...]
+            [{timestamp, title, content, sentiment, source, url}, ...] (timestamp 기준 오름차순)
         """
         print(f"뉴스 데이터 수집 중: {symbol} (소스: {news_source})")
-        
         news_list = []
         
-        try:
-            if news_source == 'yfinance':
-                news_list = self._fetch_news_yfinance(symbol, days)
-            elif news_source == 'newsapi':
-                news_list = self._fetch_news_newsapi(symbol, days)
-            elif news_source == 'alphavantage':
-                news_list = self._fetch_news_alphavantage(symbol, days)
-            elif news_source == 'finnhub':
-                news_list = self._fetch_news_finnhub(symbol, days)
-            else:
-                print(f"⚠ 경고: 알 수 없는 뉴스 소스 '{news_source}'. yfinance를 사용합니다.")
-                news_list = self._fetch_news_yfinance(symbol, days)
-        except Exception as e:
-            print(f"⚠ 경고: {news_source}에서 뉴스 수집 실패: {e}")
-            print("   yfinance로 재시도 중...")
+        if news_source == 'all':
+            # 사용 가능한 모든 소스에서 수집 후 병합, 날짜순 정렬, 중복 제거
+            merged = []
+            srcs = [('yfinance', self._fetch_news_yfinance)]
+            if (os.getenv('NEWSAPI_KEY') or '').strip():
+                srcs.append(('newsapi', self._fetch_news_newsapi))
+            if (os.getenv('ALPHAVANTAGE_API_KEY') or '').strip():
+                srcs.append(('alphavantage', self._fetch_news_alphavantage))
+            if (os.getenv('FINNHUB_API_KEY') or '').strip():
+                srcs.append(('finnhub', self._fetch_news_finnhub))
+            for name, fetch in srcs:
+                try:
+                    part = fetch(symbol, days)
+                    merged.extend(part)
+                    print(f"   {name}: {len(part)}개")
+                except Exception as e:
+                    print(f"   {name}: 실패 ({e})")
+            # timestamp 기준 오름차순
+            merged.sort(key=lambda x: x.get('timestamp', ''))
+            # 같은 날·비슷한 제목 중복 제거 (날짜별 학습 시 중복 반영 방지)
+            seen = set()
+            out = []
+            for n in merged:
+                ts = n.get('timestamp', '')
+                try:
+                    dt = pd.to_datetime(ts)
+                    d = dt.date() if hasattr(dt, 'date') else pd.Timestamp(ts).date()
+                except Exception:
+                    d = str(ts)[:10]
+                tit = (n.get('title') or n.get('content', '') or '')[:100].lower().strip()
+                k = (str(d), tit)
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(n)
+            news_list = out
+        else:
             try:
-                news_list = self._fetch_news_yfinance(symbol, days)
-            except Exception as e2:
-                print(f"⚠ yfinance도 실패: {e2}")
-                news_list = []
+                if news_source == 'yfinance':
+                    news_list = self._fetch_news_yfinance(symbol, days)
+                elif news_source == 'newsapi':
+                    news_list = self._fetch_news_newsapi(symbol, days)
+                elif news_source == 'alphavantage':
+                    news_list = self._fetch_news_alphavantage(symbol, days)
+                elif news_source == 'finnhub':
+                    news_list = self._fetch_news_finnhub(symbol, days)
+                else:
+                    print(f"⚠ 경고: 알 수 없는 뉴스 소스 '{news_source}'. yfinance를 사용합니다.")
+                    news_list = self._fetch_news_yfinance(symbol, days)
+            except Exception as e:
+                print(f"⚠ 경고: {news_source}에서 뉴스 수집 실패: {e}")
+                try:
+                    news_list = self._fetch_news_yfinance(symbol, days)
+                except Exception as e2:
+                    print(f"⚠ yfinance도 실패: {e2}")
+                    news_list = []
         
         print(f"✓ 뉴스 데이터 수집 완료: {len(news_list)}개")
         return news_list

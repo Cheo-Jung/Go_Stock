@@ -159,9 +159,9 @@ with tab1:
                         )
                         progress_bar.progress(50)
                         
-                        # 뉴스 데이터 수집
+                        # 뉴스 데이터 수집 (all: yfinance + API 키 있는 소스 전부, 날짜순·중복 제거)
                         status_text.text("뉴스 데이터 수집 중...")
-                        news_data = st.session_state.generator.collect_news_data(symbol, days=365)
+                        news_data = st.session_state.generator.collect_news_data(symbol, days=365, news_source='all')
                         progress_bar.progress(100)
                         
                         # 뉴스 데이터가 없으면 더미 데이터 생성
