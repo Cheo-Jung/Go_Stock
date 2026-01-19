@@ -7,6 +7,7 @@ cryptography>=3.3.2
 requests>=2.31.0
 streamlit>=1.28.0
 plotly>=5.17.0
+python-dotenv>=1.0.0  # .env 파일로 API 키 관리 (선택)
 
 # GPU 지원 (선택사항):
 # CPU만 사용하는 경우: 위의 torch 설치로 충분합니다

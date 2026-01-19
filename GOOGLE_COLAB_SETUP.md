@@ -25,11 +25,11 @@
 ```python
 # 1. 필요한 라이브러리 설치
 !pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-!pip install transformers pandas numpy yfinance requests accelerate bitsandbytes
+!pip install transformers pandas numpy yfinance requests accelerate bitsandbytes python-dotenv
 
-# 2. 파일 업로드 (go_stock.py를 업로드)
+# 2. 파일 업로드 (go_stock.py + .env 선택)
 from google.colab import files
-uploaded = files.upload()
+uploaded = files.upload()  # go_stock.py 필수, .env는 뉴스 API 사용 시
 
 # 3. GPU 확인
 import torch
@@ -39,7 +39,49 @@ if torch.cuda.is_available():
     print(f"GPU 메모리: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
 ```
 
-### 4. 코드 실행
+### 4. API 키 설정 (뉴스 API 사용 시)
+
+**.env를 로컬과 동일하게 쓰면 됩니다.** Colab에서 쓰는 방법 3가지:
+
+#### 방법 A: .env 파일 업로드 (로컬과 동일) ⭐ 권장
+
+로컬에서 쓰는 `.env`를 그대로 업로드합니다. `files.upload()` 시 `.env`도 함께 선택하세요.
+
+```
+# .env 내용 (로컬과 동일)
+NEWSAPI_KEY=your_key_here
+ALPHAVANTAGE_API_KEY=your_key_here
+FINNHUB_API_KEY=your_key_here
+```
+
+`go_stock` import 시 `.env`를 자동으로 읽습니다. **이미 2번에서 .env를 업로드했다면 추가 작업 없음.**
+
+#### 방법 B: Colab에서 .env 새로 만들기
+
+```python
+# .env 파일 생성 (키가 노트북에 노출되지 않게 하려면 getpass 사용)
+from getpass import getpass
+
+with open('.env', 'w') as f:
+    f.write(f"NEWSAPI_KEY={getpass('NEWSAPI_KEY 입력: ')}\n")
+    # 필요 시: f.write(f"ALPHAVANTAGE_API_KEY={getpass('Alpha Vantage 키: ')}\n")
+
+print("✓ .env 생성 완료")
+```
+
+#### 방법 C: 환경 변수로 직접 설정
+
+```python
+import os
+os.environ['NEWSAPI_KEY'] = 'your_newsapi_key_here'
+# os.environ['ALPHAVANTAGE_API_KEY'] = 'your_alphavantage_key_here'
+
+# 이 셀 실행 후, 다음 셀에서 from go_stock import ... 하세요
+```
+
+> ⚠️ **방법 C**는 키가 노트북에 보이므로, 노트북을 공개/공유할 계획이면 **방법 A 또는 B**를 쓰는 것이 좋습니다.
+
+### 5. 코드 실행
 
 ```python
 # go_stock.py 실행

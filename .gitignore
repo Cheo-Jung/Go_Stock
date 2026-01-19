@@ -1,0 +1,27 @@
+# API 키 등 보안 정보 (절대 커밋하지 마세요!)
+.env
+.env.local
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+.venv/
+env/
+
+# 모델 파일 (용량 큼)
+*.pt
+*.pth
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 기타
+.DS_Store
+Thumbs.db

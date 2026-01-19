@@ -16,8 +16,16 @@ import yfinance as yf
 import requests
 from typing import List, Dict, Tuple, Optional
 import json
+import os
 import warnings
 warnings.filterwarnings('ignore')
+
+# .env 파일에서 API 키 로드 (python-dotenv 설치 시)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # .env 파일 있으면 환경 변수로 로드
+except ImportError:
+    pass  # dotenv 없어도 환경 변수로 설정 가능
 
 
 class PriceNewsDataset(Dataset):
@@ -409,15 +417,236 @@ class StockPriceGenerator:
         print(f"[완료] 데이터 수집 완료: {len(data)}개 레코드")
         return data
     
-    def collect_news_data(self, symbol: str, days: int = 365) -> List[Dict]:
-        """뉴스 데이터 수집 (예시: Alpha Vantage API 또는 다른 소스 사용)"""
-        print(f"뉴스 데이터 수집 중: {symbol}")
-        # 실제 구현에서는 뉴스 API를 사용해야 함
-        # 여기서는 예시 데이터 구조만 제공
+    def collect_news_data(self, symbol: str, days: int = 365, 
+                         news_source: str = 'yfinance') -> List[Dict]:
+        """
+        뉴스 데이터 수집
+        
+        Args:
+            symbol: 종목 심볼 (예: 'BTC-USD', 'AAPL')
+            days: 수집할 일수
+            news_source: 뉴스 소스 ('yfinance', 'newsapi', 'alphavantage', 'finnhub')
+        
+        Returns:
+            뉴스 데이터 리스트 [{timestamp, title, content, sentiment}, ...]
+        """
+        print(f"뉴스 데이터 수집 중: {symbol} (소스: {news_source})")
+        
         news_list = []
         
-        # 예시: 실제로는 API 호출
-        # news_list = self._fetch_news_from_api(symbol, days)
+        try:
+            if news_source == 'yfinance':
+                news_list = self._fetch_news_yfinance(symbol, days)
+            elif news_source == 'newsapi':
+                news_list = self._fetch_news_newsapi(symbol, days)
+            elif news_source == 'alphavantage':
+                news_list = self._fetch_news_alphavantage(symbol, days)
+            elif news_source == 'finnhub':
+                news_list = self._fetch_news_finnhub(symbol, days)
+            else:
+                print(f"⚠ 경고: 알 수 없는 뉴스 소스 '{news_source}'. yfinance를 사용합니다.")
+                news_list = self._fetch_news_yfinance(symbol, days)
+        except Exception as e:
+            print(f"⚠ 경고: {news_source}에서 뉴스 수집 실패: {e}")
+            print("   yfinance로 재시도 중...")
+            try:
+                news_list = self._fetch_news_yfinance(symbol, days)
+            except Exception as e2:
+                print(f"⚠ yfinance도 실패: {e2}")
+                news_list = []
+        
+        print(f"✓ 뉴스 데이터 수집 완료: {len(news_list)}개")
+        return news_list
+    
+    def _fetch_news_yfinance(self, symbol: str, days: int) -> List[Dict]:
+        """yfinance를 사용한 뉴스 수집 (무료, API 키 불필요)"""
+        news_list = []
+        
+        try:
+            ticker = yf.Ticker(symbol)
+            # yfinance의 news 속성 사용
+            news = ticker.news
+            
+            if news:
+                for item in news:
+                    # 타임스탬프 변환 (Unix timestamp를 datetime으로)
+                    timestamp = datetime.fromtimestamp(item.get('providerPublishTime', 0))
+                    
+                    # days 범위 내의 뉴스만 수집
+                    if (datetime.now() - timestamp).days <= days:
+                        news_list.append({
+                            'timestamp': timestamp.isoformat(),
+                            'title': item.get('title', ''),
+                            'content': item.get('summary', '') or item.get('title', ''),
+                            'sentiment': 0,  # yfinance는 감정 분석 제공 안 함
+                            'source': item.get('publisher', 'Unknown'),
+                            'url': item.get('link', '')
+                        })
+        except Exception as e:
+            print(f"  yfinance 뉴스 수집 오류: {e}")
+        
+        return news_list
+    
+    def _fetch_news_newsapi(self, symbol: str, days: int) -> List[Dict]:
+        """NewsAPI를 사용한 뉴스 수집 (API 키 필요)"""
+        news_list = []
+        
+        # API 키 확인 (환경 변수에서 가져오기 - 코드에 직접 적지 마세요!)
+        api_key = os.getenv('NEWSAPI_KEY', '')
+        if not api_key:
+            print("  ⚠ NEWSAPI_KEY 환경 변수가 설정되지 않았습니다.")
+            print("     무료 API 키는 https://newsapi.org/register 에서 발급받을 수 있습니다.")
+            return news_list
+        
+        try:
+            # 심볼에서 종목명 추출 (예: BTC-USD -> Bitcoin)
+            query = symbol.replace('-USD', '').replace('-', ' ')
+            
+            # NewsAPI 호출
+            url = f"https://newsapi.org/v2/everything"
+            params = {
+                'q': f"{query} OR {symbol}",
+                'language': 'en',
+                'sortBy': 'publishedAt',
+                'pageSize': 100,
+                'apiKey': api_key
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('status') == 'ok':
+                for article in data.get('articles', []):
+                    try:
+                        timestamp = datetime.fromisoformat(
+                            article['publishedAt'].replace('Z', '+00:00')
+                        )
+                        
+                        if (datetime.now(timestamp.tzinfo) - timestamp).days <= days:
+                            news_list.append({
+                                'timestamp': timestamp.isoformat(),
+                                'title': article.get('title', ''),
+                                'content': article.get('description', '') or article.get('title', ''),
+                                'sentiment': 0,
+                                'source': article.get('source', {}).get('name', 'Unknown'),
+                                'url': article.get('url', '')
+                            })
+                    except Exception as e:
+                        continue
+        except Exception as e:
+            print(f"  NewsAPI 오류: {e}")
+        
+        return news_list
+    
+    def _fetch_news_alphavantage(self, symbol: str, days: int) -> List[Dict]:
+        """Alpha Vantage NEWS_SENTIMENT API 사용 (API 키 필요)"""
+        news_list = []
+        
+        api_key = os.getenv('ALPHAVANTAGE_API_KEY', '')
+        if not api_key:
+            print("  ⚠ ALPHAVANTAGE_API_KEY 환경 변수가 설정되지 않았습니다.")
+            print("     무료 API 키는 https://www.alphavantage.co/support/#api-key 에서 발급받을 수 있습니다.")
+            return news_list
+        
+        try:
+            # 심볼에서 티커 추출 (예: BTC-USD -> BTC)
+            ticker = symbol.split('-')[0]
+            
+            url = "https://www.alphavantage.co/query"
+            params = {
+                'function': 'NEWS_SENTIMENT',
+                'tickers': ticker,
+                'apikey': api_key,
+                'limit': 1000
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if 'feed' in data:
+                for item in data['feed']:
+                    try:
+                        timestamp = datetime.fromisoformat(
+                            item['time_published'].replace('T', ' ').split('+')[0]
+                        )
+                        
+                        if (datetime.now() - timestamp).days <= days:
+                            # 감정 점수 추출 (-1 to 1)
+                            sentiment_score = 0
+                            if 'overall_sentiment_score' in item:
+                                try:
+                                    sentiment_score = float(item['overall_sentiment_score'])
+                                except:
+                                    pass
+                            
+                            news_list.append({
+                                'timestamp': timestamp.isoformat(),
+                                'title': item.get('title', ''),
+                                'content': item.get('summary', '') or item.get('title', ''),
+                                'sentiment': sentiment_score,
+                                'source': item.get('source', 'Unknown'),
+                                'url': item.get('url', '')
+                            })
+                    except Exception as e:
+                        continue
+        except Exception as e:
+            print(f"  Alpha Vantage 오류: {e}")
+        
+        return news_list
+    
+    def _fetch_news_finnhub(self, symbol: str, days: int) -> List[Dict]:
+        """Finnhub API 사용 (API 키 필요)"""
+        news_list = []
+        
+        api_key = os.getenv('FINNHUB_API_KEY', '')
+        if not api_key:
+            print("  ⚠ FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다.")
+            print("     무료 API 키는 https://finnhub.io/register 에서 발급받을 수 있습니다.")
+            return news_list
+        
+        try:
+            # 심볼에서 티커 추출
+            ticker = symbol.split('-')[0]
+            
+            # Finnhub는 암호화폐와 주식을 다르게 처리
+            if '-USD' in symbol.upper():
+                # 암호화폐
+                category = 'crypto'
+            else:
+                # 주식
+                category = 'general'
+            
+            url = "https://finnhub.io/api/v1/company-news"
+            params = {
+                'symbol': ticker,
+                'from': (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
+                'to': datetime.now().strftime('%Y-%m-%d'),
+                'token': api_key
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if isinstance(data, list):
+                for item in data[:100]:  # 최대 100개
+                    try:
+                        timestamp = datetime.fromtimestamp(item.get('datetime', 0))
+                        
+                        news_list.append({
+                            'timestamp': timestamp.isoformat(),
+                            'title': item.get('headline', ''),
+                            'content': item.get('summary', '') or item.get('headline', ''),
+                            'sentiment': 0,  # Finnhub는 감정 점수 제공 안 함
+                            'source': item.get('source', 'Unknown'),
+                            'url': item.get('url', '')
+                        })
+                    except Exception as e:
+                        continue
+        except Exception as e:
+            print(f"  Finnhub 오류: {e}")
         
         return news_list
     
