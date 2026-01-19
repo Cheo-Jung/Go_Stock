@@ -10,26 +10,32 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 _env_path = os.path.join(_script_dir, '.env')
 
 def _load_env_fallback():
-    """load_dotenv가 안 먹힐 때 .env를 직접 파싱 (BOM, 인코딩 대비)"""
+    """load_dotenv가 안 먹힐 때 .env를 직접 파싱 (BOM/인코딩/\\r 대비)"""
     want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
     if all(os.getenv(k) for k in want):
         return
     if not os.path.isfile(_env_path):
         return
-    try:
-        with open(_env_path, 'r', encoding='utf-8-sig') as f:  # utf-8-sig: BOM 제거
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                if '=' not in line:
-                    continue
-                k, v = line.split('=', 1)
-                k, v = k.strip(), v.strip().strip('"').strip("'")
-                if k in want and not os.getenv(k) and v:
-                    os.environ[k] = v
-    except Exception:
-        pass
+    _bom = chr(0xFEFF)
+    raw = None
+    for enc in ('utf-8-sig', 'utf-8', 'cp949', 'latin-1'):
+        try:
+            with open(_env_path, 'r', encoding=enc) as f:
+                raw = f.read()
+            break
+        except Exception:
+            continue
+    if raw is None:
+        return
+    for line in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+        line = line.strip().replace(_bom, '')
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        k = k.strip().replace(_bom, '').replace('\r', '').strip()
+        v = v.strip().strip('"').strip("'").replace('\r', '').strip()
+        if k in want and not os.getenv(k) and v:
+            os.environ[k] = v
 
 try:
     from dotenv import load_dotenv

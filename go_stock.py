@@ -25,10 +25,11 @@ warnings.filterwarnings('ignore')
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 
 def _load_env_fallback():
-    """load_dotenv가 안 될 때 .env 직접 파싱 (BOM/인코딩 대비). Colab: /content, cwd도 확인."""
+    """load_dotenv가 안 될 때 .env 직접 파싱 (BOM/인코딩/\\r 대비). Colab: /content, cwd도 확인."""
     want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
     if all(os.getenv(k) for k in want):
         return
+    _bom = chr(0xFEFF)
     paths = [
         _env_path,
         '/content/.env',  # Google Colab 기본
@@ -37,18 +38,25 @@ def _load_env_fallback():
     for p in paths:
         if not p or not os.path.isfile(p):
             continue
-        try:
-            with open(p, 'r', encoding='utf-8-sig') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#') or '=' not in line:
-                        continue
-                    k, v = line.split('=', 1)
-                    k, v = k.strip(), v.strip().strip('"').strip("'")
-                    if k in want and not os.getenv(k) and v:
-                        os.environ[k] = v
-        except Exception:
-            pass
+        raw = None
+        for enc in ('utf-8-sig', 'utf-8', 'cp949', 'latin-1'):
+            try:
+                with open(p, 'r', encoding=enc) as f:
+                    raw = f.read()
+                break
+            except Exception:
+                continue
+        if raw is None:
+            continue
+        for line in raw.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+            line = line.strip().replace(_bom, '')
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            k, v = line.split('=', 1)
+            k = k.strip().replace(_bom, '').replace('\r', '').strip()
+            v = v.strip().strip('"').strip("'").replace('\r', '').strip()
+            if k in want and not os.getenv(k) and v:
+                os.environ[k] = v
         if all(os.getenv(k) for k in want):
             break
 
