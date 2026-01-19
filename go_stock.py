@@ -473,8 +473,9 @@ class StockPriceGenerator:
         """
         print(f"뉴스 데이터 수집 중: {symbol} (소스: {news_source})")
         news_list = []
+        _src = (str(news_source or '').strip().lower())
         
-        if news_source == 'all':
+        if _src == 'all':
             # 사용 가능한 모든 소스에서 수집 후 병합, 날짜순 정렬, 중복 제거
             merged = []
             srcs = [('yfinance', self._fetch_news_yfinance)]
