@@ -347,6 +347,44 @@ os.environ['FINNHUB_API_KEY'] = 'your_api_key_here'
 
 ## 🔍 문제 해결
 
+### ".env에 넣었는데 API 키가 로드 안 됨"
+
+1. **위치**: `.env`는 **프로젝트 루트**(`go_stock.py` 있는 폴더)에 두세요.  
+   - `c:\Users\pstcw\Downloads\Go_Stock\.env`
+
+2. **이름**: 반드시 **`.env`** (앞에 점, 확장자 없음).  
+   - `env.txt`, `.env.txt` ❌
+
+3. **형식** (줄마다 하나씩, `=` 앞뒤 공백 없이):
+   ```
+   NEWSAPI_KEY=abc123키값
+   ALPHAVANTAGE_API_KEY=xyz789키값
+   ```
+   - `KEY = value` 처럼 `=` 앞뒤 공백 있으면 값에 공백 들어갈 수 있음.  
+   - 쌍따옴표는 써도 되고 생략해도 됨.
+
+4. **실행 경로**: 터미널에서 **프로젝트 폴더**로 이동한 뒤 실행.
+   ```bash
+   cd c:\Users\pstcw\Downloads\Go_Stock
+   python check_news.py
+   ```
+
+5. **로드 여부 확인**:
+   ```bash
+   python check_news.py
+   ```
+   - `[0] .env / API 키 확인` 에서  
+     - `.env 존재: True`  
+     - `NEWSAPI_KEY: 로드됨 (ab***78)`  
+   - 이런 식이면 정상. `(없음)` 이면 경로/이름/형식 확인.
+
+6. **python-dotenv**:
+   ```bash
+   pip install python-dotenv
+   ```
+
+---
+
 ### "API 키가 설정되지 않았습니다" 오류
 
 ```python
@@ -358,7 +396,41 @@ print(os.getenv('ALPHAVANTAGE_API_KEY'))  # None이면 설정 안 됨
 os.environ['ALPHAVANTAGE_API_KEY'] = 'your_key'
 ```
 
-### 뉴스가 수집되지 않음
+### 뉴스가 수집되지 않음 (0건)
+
+**체크 스크립트:** `python check_news.py` 로 각 소스별 수집 여부 확인.
+
+#### yfinance (기본)
+
+| 원인 | 설명 |
+|------|------|
+| Yahoo 쪽 일시 오류 | 스크래핑 기반이라 차단·변경 시 0건 가능. 잠시 후 재시도. |
+| 해당 종목 뉴스 없음 | 비유명 종목은 뉴스가 없을 수 있음. `AAPL`, `BTC-USD` 등으로 먼저 테스트. |
+| `ticker.news` 비어 있음 | yfinance/Yahoo 구조 변경 시 `[]` 반환. 다른 소스 사용 권장. |
+
+#### NewsAPI
+
+| 원인 | 설명 |
+|------|------|
+| `NEWSAPI_KEY` 미설정 | `.env` 또는 `os.environ['NEWSAPI_KEY']` 확인. |
+| 무료 플랜 1개월 제한 | `days` 가 31 이상이면 최근 1개월만 검색. `days=30` 이하로. |
+| 쿼리/심볼 | `BTC-USD` → `"BTC OR Bitcoin"` 등으로 검색. 일부 심볼은 기사 적음. |
+
+#### Alpha Vantage
+
+| 원인 | 설명 |
+|------|------|
+| `ALPHAVANTAGE_API_KEY` 미설정 | `.env` 또는 환경 변수 확인. |
+| 25 calls/일 초과 | 무료 한도 초과 시 당일 0건. 내일 재시도 또는 유료. |
+| `time_published` 파싱 | 응답 형식이 달라 파싱 실패 시 해당 기사만 제외. 대부분은 수집됨. |
+
+#### Finnhub
+
+| 원인 | 설명 |
+|------|------|
+| `FINNHUB_API_KEY` 미설정 | `.env` 또는 환경 변수 확인. |
+| 암호화폐(예: BTC-USD) | `company-news`는 **주식 전용**. 암호화폐는 `category=crypto` 사용 (코드에 반영됨). |
+| 주식 | `company-news` 에서 `symbol=AAPL` 등 **주식 티커**만 유효. |
 
 ```python
 # 1. 다른 소스 시도

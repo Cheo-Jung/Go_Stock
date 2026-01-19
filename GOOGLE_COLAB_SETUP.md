@@ -56,17 +56,23 @@ FINNHUB_API_KEY=your_key_here
 
 `go_stock` import 시 `.env`를 자동으로 읽습니다. **이미 2번에서 .env를 업로드했다면 추가 작업 없음.**
 
+- Colab에서는 **`/content/.env`** 또는 **현재 작업 디렉터리(cwd)의 `.env`** 를 자동으로 찾습니다. `files.upload()`로 올린 `.env`는 보통 `/content/.env`에 있어 별도 설정이 필요 없습니다.
+- `go_stock_colab.ipynb`를 쓸 때: **2. 파일 업로드** 셀에서 `.env`를 같이 올리면, 해당 셀에서 `load_dotenv`로 즉시 로드하고 `NEWSAPI_KEY` 등 로드 여부를 출력합니다.
+
 #### 방법 B: Colab에서 .env 새로 만들기
 
 ```python
 # .env 파일 생성 (키가 노트북에 노출되지 않게 하려면 getpass 사용)
 from getpass import getpass
+from dotenv import load_dotenv
 
 with open('.env', 'w') as f:
     f.write(f"NEWSAPI_KEY={getpass('NEWSAPI_KEY 입력: ')}\n")
     # 필요 시: f.write(f"ALPHAVANTAGE_API_KEY={getpass('Alpha Vantage 키: ')}\n")
 
-print("✓ .env 생성 완료")
+load_dotenv('.env')
+load_dotenv('/content/.env')  # Colab 기본 경로
+print("✓ .env 생성 및 로드 완료")
 ```
 
 #### 방법 C: 환경 변수로 직접 설정

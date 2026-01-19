@@ -21,11 +21,49 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # .env 파일에서 API 키 로드 (python-dotenv 설치 시)
+# 스크립트 위치 기준으로 .env 찾기 (실행 경로에 상관없이 동작)
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+
+def _load_env_fallback():
+    """load_dotenv가 안 될 때 .env 직접 파싱 (BOM/인코딩 대비). Colab: /content, cwd도 확인."""
+    want = ('NEWSAPI_KEY', 'ALPHAVANTAGE_API_KEY', 'FINNHUB_API_KEY')
+    if all(os.getenv(k) for k in want):
+        return
+    paths = [
+        _env_path,
+        '/content/.env',  # Google Colab 기본
+        os.path.join(os.getcwd(), '.env'),
+    ]
+    for p in paths:
+        if not p or not os.path.isfile(p):
+            continue
+        try:
+            with open(p, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k in want and not os.getenv(k) and v:
+                        os.environ[k] = v
+        except Exception:
+            pass
+        if all(os.getenv(k) for k in want):
+            break
+
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # .env 파일 있으면 환경 변수로 로드
+    load_dotenv(_env_path)
+    load_dotenv()
+    # Colab: 업로드한 .env가 /content 또는 cwd에 있는 경우
+    for p in ('/content/.env', os.path.join(os.getcwd(), '.env')):
+        if p and p != _env_path and os.path.isfile(p):
+            load_dotenv(p)
+            break
 except ImportError:
-    pass  # dotenv 없어도 환경 변수로 설정 가능
+    pass
+_load_env_fallback()
 
 
 class PriceNewsDataset(Dataset):
@@ -464,24 +502,33 @@ class StockPriceGenerator:
         
         try:
             ticker = yf.Ticker(symbol)
-            # yfinance의 news 속성 사용
-            news = ticker.news
+            news = getattr(ticker, 'news', None)
+            if news is None:
+                news = []
+            if not isinstance(news, list):
+                news = list(news) if news else []
             
-            if news:
-                for item in news:
-                    # 타임스탬프 변환 (Unix timestamp를 datetime으로)
-                    timestamp = datetime.fromtimestamp(item.get('providerPublishTime', 0))
-                    
-                    # days 범위 내의 뉴스만 수집
-                    if (datetime.now() - timestamp).days <= days:
-                        news_list.append({
-                            'timestamp': timestamp.isoformat(),
-                            'title': item.get('title', ''),
-                            'content': item.get('summary', '') or item.get('title', ''),
-                            'sentiment': 0,  # yfinance는 감정 분석 제공 안 함
-                            'source': item.get('publisher', 'Unknown'),
-                            'url': item.get('link', '')
-                        })
+            for item in news:
+                try:
+                    pt = item.get('providerPublishTime') or 0
+                    if not pt or pt <= 0:
+                        pt = int(datetime.now().timestamp())
+                    timestamp = datetime.fromtimestamp(int(pt))
+                    if (datetime.now() - timestamp).days > days:
+                        continue
+                    title = item.get('title', '') or item.get('headline', '')
+                    if not title:
+                        continue
+                    news_list.append({
+                        'timestamp': timestamp.isoformat(),
+                        'title': title,
+                        'content': item.get('summary', '') or item.get('description', '') or title,
+                        'sentiment': 0,
+                        'source': item.get('publisher', '') or item.get('source', 'Unknown'),
+                        'url': item.get('link', '') or item.get('url', '')
+                    })
+                except Exception:
+                    continue
         except Exception as e:
             print(f"  yfinance 뉴스 수집 오류: {e}")
         
@@ -492,7 +539,7 @@ class StockPriceGenerator:
         news_list = []
         
         # API 키 확인 (환경 변수에서 가져오기 - 코드에 직접 적지 마세요!)
-        api_key = os.getenv('NEWSAPI_KEY', '')
+        api_key = (os.getenv('NEWSAPI_KEY', '') or '').strip()
         if not api_key:
             print("  ⚠ NEWSAPI_KEY 환경 변수가 설정되지 않았습니다.")
             print("     무료 API 키는 https://newsapi.org/register 에서 발급받을 수 있습니다.")
@@ -539,6 +586,26 @@ class StockPriceGenerator:
         
         return news_list
     
+    @staticmethod
+    def _parse_av_time(s: str):
+        """Alpha Vantage time_published 파싱. 예: 20240410T013000, 2024-04-10T01:30:00Z"""
+        if not s or not isinstance(s, str):
+            return None
+        s = s.strip().replace('Z', '+00:00')
+        try:
+            # ISO: 2024-04-10T01:30:00 또는 2024-04-10T01:30:00+00:00
+            return datetime.fromisoformat(s)
+        except Exception:
+            pass
+        try:
+            # compact: 20240410T013000 또는 20240410T013000-0500
+            s0 = s[:15] if (len(s) >= 15 and s[8:9] == 'T') else s
+            if len(s0) == 15 and s0[:8].isdigit() and s0[9:15].isdigit():
+                return datetime(int(s0[0:4]), int(s0[4:6]), int(s0[6:8]), int(s0[9:11]), int(s0[11:13]), int(s0[13:15]))
+        except Exception:
+            pass
+        return None
+    
     def _fetch_news_alphavantage(self, symbol: str, days: int) -> List[Dict]:
         """Alpha Vantage NEWS_SENTIMENT API 사용 (API 키 필요)"""
         news_list = []
@@ -568,9 +635,10 @@ class StockPriceGenerator:
             if 'feed' in data:
                 for item in data['feed']:
                     try:
-                        timestamp = datetime.fromisoformat(
-                            item['time_published'].replace('T', ' ').split('+')[0]
-                        )
+                        ts = self._parse_av_time(item.get('time_published', ''))
+                        if ts is None:
+                            continue
+                        timestamp = ts
                         
                         if (datetime.now() - timestamp).days <= days:
                             # 감정 점수 추출 (-1 to 1)
@@ -597,53 +665,57 @@ class StockPriceGenerator:
         return news_list
     
     def _fetch_news_finnhub(self, symbol: str, days: int) -> List[Dict]:
-        """Finnhub API 사용 (API 키 필요)"""
+        """Finnhub API 사용 (API 키 필요)
+        - 암호화폐(BTC-USD 등): /v1/news?category=crypto 사용 (company-news는 주식 전용)
+        - 주식(AAPL 등): /v1/company-news 사용
+        """
         news_list = []
         
-        api_key = os.getenv('FINNHUB_API_KEY', '')
+        api_key = (os.getenv('FINNHUB_API_KEY', '') or '').strip()
         if not api_key:
             print("  ⚠ FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다.")
             print("     무료 API 키는 https://finnhub.io/register 에서 발급받을 수 있습니다.")
             return news_list
         
         try:
-            # 심볼에서 티커 추출
-            ticker = symbol.split('-')[0]
+            is_crypto = '-USD' in symbol.upper() or '-USDT' in symbol.upper()
+            cutoff = (datetime.now() - timedelta(days=days)).timestamp()
             
-            # Finnhub는 암호화폐와 주식을 다르게 처리
-            if '-USD' in symbol.upper():
-                # 암호화폐
-                category = 'crypto'
+            if is_crypto:
+                # 암호화폐: company-news는 지원 안 함 → /v1/news?category=crypto
+                url = "https://finnhub.io/api/v1/news"
+                params = {'category': 'crypto', 'token': api_key}
             else:
-                # 주식
-                category = 'general'
-            
-            url = "https://finnhub.io/api/v1/company-news"
-            params = {
-                'symbol': ticker,
-                'from': (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
-                'to': datetime.now().strftime('%Y-%m-%d'),
-                'token': api_key
-            }
+                # 주식: /v1/company-news
+                ticker = symbol.split('-')[0]
+                url = "https://finnhub.io/api/v1/company-news"
+                params = {
+                    'symbol': ticker,
+                    'from': (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d'),
+                    'to': datetime.now().strftime('%Y-%m-%d'),
+                    'token': api_key
+                }
             
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
             if isinstance(data, list):
-                for item in data[:100]:  # 최대 100개
+                for item in data[:100]:
                     try:
-                        timestamp = datetime.fromtimestamp(item.get('datetime', 0))
-                        
+                        ts = item.get('datetime', 0)
+                        if ts and ts < cutoff:
+                            continue
+                        timestamp = datetime.fromtimestamp(ts) if ts else datetime.now()
                         news_list.append({
                             'timestamp': timestamp.isoformat(),
                             'title': item.get('headline', ''),
                             'content': item.get('summary', '') or item.get('headline', ''),
-                            'sentiment': 0,  # Finnhub는 감정 점수 제공 안 함
+                            'sentiment': 0,
                             'source': item.get('source', 'Unknown'),
                             'url': item.get('url', '')
                         })
-                    except Exception as e:
+                    except Exception:
                         continue
         except Exception as e:
             print(f"  Finnhub 오류: {e}")
