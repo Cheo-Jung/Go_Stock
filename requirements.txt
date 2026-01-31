@@ -9,6 +9,10 @@ streamlit>=1.28.0
 plotly>=5.17.0
 python-dotenv>=1.0.0  # .env 파일로 API 키 관리 (선택)
 
+# Optional dependencies for enhanced news collection:
+# praw>=7.7.0  # Reddit API support (uncomment if using Reddit news source)
+# tweepy>=4.14.0  # Twitter API support (uncomment if using Twitter news source)
+
 # GPU 지원 (선택사항):
 # CPU만 사용하는 경우: 위의 torch 설치로 충분합니다
 # GPU 사용 시 (CUDA 11.8): pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
