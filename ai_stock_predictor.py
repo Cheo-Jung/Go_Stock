@@ -193,8 +193,6 @@ class NewsSentimentAgent:
                 logger.info(f"✓ Collected {len(news)} articles from yfinance")
             except Exception as e:
                 logger.warning(f"✗ Failed to fetch yfinance news: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
                 self.collection_stats['sources_failed'].append('yfinance')
         
         if 'all' in sources or 'newsapi' in sources:
@@ -307,8 +305,6 @@ class NewsSentimentAgent:
                     logger.info(f"✓ Collected {len(news)} articles from CryptoCompare")
                 except Exception as e:
                     logger.warning(f"✗ Failed to fetch CryptoCompare news: {e}")
-                    import traceback
-                    logger.debug(traceback.format_exc())
                     self.collection_stats['sources_failed'].append('cryptocompare')
         
         logger.info(f"Collection phase complete. Total articles collected so far: {len(all_news)}")
@@ -415,7 +411,6 @@ class NewsSentimentAgent:
                         'sentiment': 0.0
                     })
                 except Exception as e:
-                    logger.debug(f"Error processing yfinance article: {e}")
                     continue
             
             logger.info(f"yfinance: Filtered to {len(news_list)} articles within {days} days (from {len(news)} raw articles)")
@@ -424,8 +419,6 @@ class NewsSentimentAgent:
                 logger.warning(f"yfinance only returned {len(news_list)} articles - this is a yfinance limitation. Use other sources for more articles.")
         except Exception as e:
             logger.error(f"Error fetching yfinance news: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
         
         return news_list
     
@@ -435,7 +428,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('NEWSAPI_KEY', '')
         
         if not api_key:
-            logger.debug("NEWSAPI_KEY not found, skipping NewsAPI")
             return news_list
         
         try:
@@ -513,7 +505,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('ALPHAVANTAGE_API_KEY', '')
         
         if not api_key:
-            logger.debug("ALPHAVANTAGE_API_KEY not found, skipping Alpha Vantage")
             return news_list
         
         try:
@@ -578,7 +569,6 @@ class NewsSentimentAgent:
                                 'sentiment': sentiment_score  # Already has sentiment
                             })
                         except Exception as e:
-                            logger.debug(f"Error parsing Alpha Vantage article: {e}")
                             continue
         except Exception as e:
             logger.error(f"Error fetching Alpha Vantage news: {e}")
@@ -591,7 +581,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('FINNHUB_API_KEY', '')
         
         if not api_key:
-            logger.debug("FINNHUB_API_KEY not found, skipping Finnhub")
             return news_list
         
         try:
@@ -651,7 +640,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('POLYGON_API_KEY', '')
         
         if not api_key:
-            logger.debug("POLYGON_API_KEY not found, skipping Polygon")
             return news_list
         
         try:
@@ -709,7 +697,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('TWITTER_API_KEY', '')
         
         if not bearer_token and not api_key:
-            logger.debug("Twitter API credentials not found, skipping Twitter")
             return news_list
         
         try:
@@ -764,7 +751,6 @@ class NewsSentimentAgent:
         try:
             import praw
         except ImportError:
-            logger.debug("PRAW not installed, skipping Reddit")
             return news_list
         
         try:
@@ -773,7 +759,6 @@ class NewsSentimentAgent:
             reddit_user_agent = os.getenv('REDDIT_USER_AGENT', 'StockNewsBot/1.0')
             
             if not reddit_client_id or not reddit_client_secret:
-                logger.debug("Reddit API credentials not found, skipping Reddit")
                 return news_list
             
             reddit = praw.Reddit(
@@ -812,7 +797,6 @@ class NewsSentimentAgent:
                         except Exception:
                             continue
                 except Exception as e:
-                    logger.debug(f"Error fetching from r/{subreddit_name}: {e}")
                     continue
         except Exception as e:
             logger.error(f"Error fetching Reddit news: {e}")
@@ -829,7 +813,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('NEWSCATCHER_API_KEY', '')
         
         if not api_key:
-            logger.debug("NEWSCATCHER_API_KEY not found, skipping NewsCatcher")
             return news_list
         
         try:
@@ -879,7 +862,6 @@ class NewsSentimentAgent:
         api_key = os.getenv('BING_SEARCH_API_KEY', '')
         
         if not api_key:
-            logger.debug("BING_SEARCH_API_KEY not found, skipping Bing News")
             return news_list
         
         try:
@@ -977,7 +959,6 @@ class NewsSentimentAgent:
                             'sentiment': 0.0
                         })
                     except Exception as e:
-                        logger.debug(f"Error processing CryptoCompare article: {e}")
                         continue
                 
                 logger.info(f"CryptoCompare: Filtered to {len(news_list)} articles within {days} days")
@@ -985,8 +966,6 @@ class NewsSentimentAgent:
                 logger.warning(f"CryptoCompare returned status {response.status_code}")
         except Exception as e:
             logger.error(f"Error fetching CryptoCompare news: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
         
         return news_list
     
@@ -1910,47 +1889,3 @@ class AIStockPredictor:
         logger.info(f"System loaded from {path}")
 
 
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-def main():
-    """Example usage of the AI Stock Predictor"""
-    print("=" * 80)
-    print("AI Stock Prediction System")
-    print("=" * 80)
-    
-    # Initialize system
-    symbol = "BTC-USD"
-    predictor = AIStockPredictor(symbol)
-    
-    # Collect data
-    print("\n1. Collecting data...")
-    predictor.collect_data(period='6mo', interval='1h')
-    
-    # Train models
-    print("\n2. Training models...")
-    predictor.train_models(epochs=20, batch_size=32)
-    
-    # Make prediction
-    print("\n3. Making prediction...")
-    prediction = predictor.predict(timeframe=TimeFrame.MEDIUM_TERM)
-    
-    print(f"\nPrediction Results:")
-    print(f"  Symbol: {symbol}")
-    print(f"  Current Price: ${predictor.price_data['close'].iloc[-1]:.2f}")
-    print(f"  Predicted Price: ${prediction.price:.2f}")
-    print(f"  Confidence: {prediction.confidence:.2%}")
-    print(f"  Price Range: ${prediction.lower_bound:.2f} - ${prediction.upper_bound:.2f}")
-    print(f"  Market Regime: {prediction.regime.value}")
-    print(f"  Timeframe: {prediction.timeframe.value}")
-    
-    # Save system
-    print("\n4. Saving system...")
-    predictor.save_system(f"ai_predictor_{symbol.replace('-', '_')}.pt")
-    
-    print("\n✅ System ready!")
-
-
-if __name__ == "__main__":
-    main()
