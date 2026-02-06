@@ -1822,8 +1822,42 @@ class AIStockPredictor:
         predicted_price = ensemble_pred.item() * price_std + price_mean
         
         # Calculate confidence (based on model agreement)
+        # Get normalized predictions from all models
         pred_values = [p.item() for p in predictions.values()]
-        confidence = 1.0 - (np.std(pred_values) / (np.mean(np.abs(pred_values)) + 1e-8))
+        
+        if len(pred_values) < 2:
+            # If only one model, use a default confidence
+            confidence = 0.5
+        else:
+            # Calculate coefficient of variation (CV) = std / mean
+            # Lower CV = more agreement = higher confidence
+            mean_abs = np.mean(np.abs(pred_values))
+            std_abs = np.std(pred_values)
+            
+            if mean_abs < 1e-6:
+                # If predictions are all very close to zero, models agree but magnitude is tiny
+                # Check agreement by looking at relative spread
+                if std_abs < 1e-6:
+                    confidence = 0.7  # Models agree (all near zero)
+                else:
+                    confidence = 0.3  # Models disagree even at small scale
+            else:
+                # Coefficient of variation (normalized by mean)
+                cv = std_abs / (mean_abs + 1e-8)
+                
+                # Convert CV to confidence: lower CV = higher confidence
+                # CV of 0 = perfect agreement = 100% confidence
+                # CV of 1 = std equals mean = 50% confidence
+                # CV > 1 = high disagreement = low confidence
+                confidence = 1.0 / (1.0 + cv)
+                
+                # Additional boost if predictions are in similar direction
+                signs = [1 if p > 0 else -1 for p in pred_values]
+                if len(set(signs)) == 1:
+                    # All models agree on direction
+                    confidence = min(1.0, confidence * 1.2)
+        
+        # Clamp to [0, 1]
         confidence = max(0.0, min(1.0, confidence))
         
         # Calculate bounds (simplified)

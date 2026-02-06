@@ -1384,10 +1384,137 @@ with tab2:
 # TAB 3: MODEL TRAINING
 # ============================================================================
 with tab3:
-    st.header("🤖 Model Training")
+    st.header("🤖 Model Training & Loading")
+    
+    # Option 1: Load Pre-trained Model (Always available)
+    st.subheader("📂 Load Pre-trained Model")
+    st.markdown("""
+    **Skip training by loading a pre-trained model file (.pt)**
+    
+    You can load a model that was previously trained and saved. This is faster than training from scratch.
+    """)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        uploaded_file = st.file_uploader(
+            "Upload Model File (.pt)", 
+            type=['pt'],
+            help="Select a pre-trained model file to load"
+        )
+        
+        # Also show existing model files in current directory
+        try:
+            import glob
+            existing_models = glob.glob("*.pt")
+            if existing_models:
+                st.markdown("**Or select from existing models:**")
+                selected_model = st.selectbox(
+                    "Existing Model Files",
+                    options=[""] + existing_models,
+                    help="Select a model file from the current directory"
+                )
+            else:
+                selected_model = None
+        except:
+            selected_model = None
+    
+    with col2:
+        load_from_upload = st.button("📂 Load from Upload", type="primary", use_container_width=True, disabled=uploaded_file is None)
+        load_from_file = st.button("📂 Load from File", type="primary", use_container_width=True, disabled=not selected_model or selected_model == "")
+    
+    if load_from_upload and uploaded_file is not None:
+        with st.spinner("Loading model..."):
+            try:
+                # Save uploaded file temporarily
+                with open("temp_model.pt", "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                # Initialize predictor if needed
+                if st.session_state.predictor is None:
+                    st.session_state.predictor = AIStockPredictor(st.session_state.symbol)
+                
+                # Load the model
+                st.session_state.predictor.load_system("temp_model.pt")
+                st.session_state.models_trained = True
+                
+                # Try to restore price_data and features if available in the loaded model
+                if hasattr(st.session_state.predictor, 'price_data') and st.session_state.predictor.price_data is not None:
+                    st.session_state.price_data = st.session_state.predictor.price_data
+                    st.session_state.data_collected = True
+                if hasattr(st.session_state.predictor, 'features') and st.session_state.predictor.features is not None:
+                    st.session_state.features = st.session_state.predictor.features
+                
+                st.success("✅ Model loaded successfully!")
+                
+                # Check if data is available
+                if st.session_state.predictor.price_data is None or st.session_state.predictor.features is None:
+                    st.warning("⚠️ **Data Required for Predictions**")
+                    st.markdown("""
+                    The model has been loaded, but you need to collect data to make predictions.
+                    
+                    **Next Steps:**
+                    1. Go to the **📊 Data Collection** tab
+                    2. Click **🔄 Collect Data** button
+                    3. Once data is collected, you can make predictions
+                    
+                    The model will use the newly collected data for predictions.
+                    """)
+                else:
+                    st.info("💡 Model and data are ready! You can now make predictions.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error loading model: {str(e)}")
+                st.exception(e)
+    
+    if load_from_file and selected_model:
+        with st.spinner(f"Loading model from {selected_model}..."):
+            try:
+                # Initialize predictor if needed
+                if st.session_state.predictor is None:
+                    st.session_state.predictor = AIStockPredictor(st.session_state.symbol)
+                
+                # Load the model
+                st.session_state.predictor.load_system(selected_model)
+                st.session_state.models_trained = True
+                
+                # Try to restore price_data and features if available
+                if hasattr(st.session_state.predictor, 'price_data') and st.session_state.predictor.price_data is not None:
+                    st.session_state.price_data = st.session_state.predictor.price_data
+                    st.session_state.data_collected = True
+                if hasattr(st.session_state.predictor, 'features') and st.session_state.predictor.features is not None:
+                    st.session_state.features = st.session_state.predictor.features
+                
+                st.success(f"✅ Model loaded successfully from {selected_model}!")
+                
+                # Check if data is available
+                if st.session_state.predictor.price_data is None or st.session_state.predictor.features is None:
+                    st.warning("⚠️ **Data Required for Predictions**")
+                    st.markdown("""
+                    The model has been loaded, but you need to collect data to make predictions.
+                    
+                    **Next Steps:**
+                    1. Go to the **📊 Data Collection** tab
+                    2. Click **🔄 Collect Data** button
+                    3. Once data is collected, you can make predictions
+                    
+                    The model will use the newly collected data for predictions.
+                    """)
+                else:
+                    st.info("💡 Model and data are ready! You can now make predictions.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error loading model: {str(e)}")
+                st.exception(e)
+    
+    st.divider()
+    
+    # Option 2: Train New Model (Only if data is collected)
+    st.subheader("🚀 Train New Model")
     
     if not st.session_state.data_collected:
-        st.warning("⚠️ Please collect data first in the 'Data Collection' tab!")
+        st.warning("⚠️ Please collect data first in the 'Data Collection' tab before training!")
+        st.info("💡 **Tip:** If you have a pre-trained model, you can load it above without needing to collect data first.")
     else:
         st.markdown("""
         ### Training Process
@@ -1445,7 +1572,7 @@ with tab3:
         
         # Training status
         if st.session_state.models_trained:
-            st.subheader("✅ Training Status")
+            st.subheader("✅ Model Status")
             
             col1, col2, col3 = st.columns(3)
             
@@ -1463,40 +1590,22 @@ with tab3:
             
             st.info("🎯 All models are ready for prediction!")
             
-            # Model save/load
-            st.subheader("💾 Model Management")
-            col1, col2 = st.columns(2)
+            # Model save
+            st.subheader("💾 Save Model")
+            col1, col2 = st.columns([2, 1])
             
             with col1:
                 model_name = st.text_input("Model Name", value=f"model_{st.session_state.symbol.replace('-', '_')}")
+            
+            with col2:
                 if st.button("💾 Save Model", use_container_width=True):
                     try:
                         save_path = f"{model_name}.pt"
                         st.session_state.predictor.save_system(save_path)
                         st.success(f"✅ Model saved to {save_path}")
+                        st.info(f"💡 You can load this model later using the 'Load Pre-trained Model' section above.")
                     except Exception as e:
                         st.error(f"❌ Error saving model: {str(e)}")
-            
-            with col2:
-                uploaded_file = st.file_uploader("Load Model", type=['pt'])
-                if uploaded_file is not None:
-                    if st.button("📂 Load Model", use_container_width=True):
-                        try:
-                            # Save uploaded file temporarily
-                            with open("temp_model.pt", "wb") as f:
-                                f.write(uploaded_file.getbuffer())
-                            
-                            if st.session_state.predictor is None:
-                                st.session_state.predictor = AIStockPredictor(st.session_state.symbol)
-                            
-                            st.session_state.predictor.load_system("temp_model.pt")
-                            st.session_state.models_trained = True
-                            st.success("✅ Model loaded successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error loading model: {str(e)}")
-        else:
-            st.info("👆 Click 'Start Training' to train the models")
 
 # ============================================================================
 # TAB 4: PREDICTION
@@ -1504,8 +1613,68 @@ with tab3:
 with tab4:
     st.header("🔮 Price Prediction")
     
+    # Sync session state with predictor if needed
+    if st.session_state.predictor is not None:
+        if st.session_state.price_data is not None and st.session_state.predictor.price_data is None:
+            st.session_state.predictor.price_data = st.session_state.price_data
+        if st.session_state.features is not None and st.session_state.predictor.features is None:
+            st.session_state.predictor.features = st.session_state.features
+    
+    # Status check
+    status_ok = True
+    status_messages = []
+    
     if not st.session_state.models_trained:
-        st.warning("⚠️ Please train the models first in the 'Model Training' tab!")
+        status_ok = False
+        status_messages.append("❌ Model not trained/loaded")
+    elif st.session_state.predictor is None:
+        status_ok = False
+        status_messages.append("❌ Predictor not initialized")
+    elif st.session_state.predictor.price_data is None or st.session_state.predictor.features is None:
+        status_ok = False
+        status_messages.append("❌ Data not collected")
+    elif len(st.session_state.predictor.features) < 60:
+        status_ok = False
+        status_messages.append(f"⚠️ Insufficient data ({len(st.session_state.predictor.features)}/60 points needed)")
+    
+    # Show status
+    if status_ok:
+        st.success("✅ Ready for predictions! Model and data are available.")
+    else:
+        st.error("**Status Check Failed:**")
+        for msg in status_messages:
+            st.write(f"  {msg}")
+    
+    if not st.session_state.models_trained:
+        st.warning("⚠️ Please train or load a model first in the 'Model Training' tab!")
+    elif st.session_state.predictor is None:
+        st.error("❌ Predictor not initialized. Please collect data first.")
+    elif st.session_state.predictor.price_data is None or st.session_state.predictor.features is None:
+        st.warning("⚠️ **Data Required for Predictions**")
+        st.markdown("""
+        The model is loaded, but you need to collect data to make predictions.
+        
+        **To fix this:**
+        1. Go to the **📊 Data Collection** tab
+        2. Click **🔄 Collect Data** button
+        3. Wait for data collection to complete
+        4. Return here to make predictions
+        
+        The prediction requires:
+        - Price data (at least 60 data points)
+        - Feature data (calculated from price and news)
+        """)
+    elif len(st.session_state.predictor.features) < 60:
+        st.warning(f"⚠️ **Insufficient Data**")
+        st.markdown(f"""
+        You have {len(st.session_state.predictor.features)} data points, but predictions require at least 60.
+        
+        **To fix this:**
+        1. Go to the **📊 Data Collection** tab
+        2. Increase the **Period** (e.g., from "3mo" to "6mo" or "1y")
+        3. Click **🔄 Collect Data** again
+        4. Return here to make predictions
+        """)
     else:
         col1, col2 = st.columns([2, 1])
         
@@ -1536,8 +1705,27 @@ with tab4:
                         st.success("✅ Prediction generated!")
                         st.rerun()
                         
+                    except ValueError as e:
+                        error_msg = str(e)
+                        if "Insufficient data" in error_msg or "data" in error_msg.lower():
+                            st.error(f"❌ Prediction error: {error_msg}")
+                            st.warning("""
+                            **This usually means:**
+                            - Not enough data points (need at least 60)
+                            - Data hasn't been collected yet
+                            
+                            **Solution:**
+                            1. Go to **📊 Data Collection** tab
+                            2. Make sure you've collected data
+                            3. If you have less than 60 data points, increase the **Period** setting
+                            4. Click **🔄 Collect Data** again
+                            5. Return here to make predictions
+                            """)
+                        else:
+                            st.error(f"❌ Prediction error: {error_msg}")
                     except Exception as e:
                         st.error(f"❌ Prediction error: {str(e)}")
+                        st.exception(e)
         
         st.divider()
         
@@ -1610,6 +1798,83 @@ with tab4:
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
+            
+            # Confidence explanation
+            with st.expander("ℹ️ How Confidence is Calculated", expanded=False):
+                st.markdown("""
+                **Confidence Calculation:**
+                
+                Confidence is based on **model agreement** - how much the three models (short-term, medium-term, long-term) agree on their predictions.
+                
+                **Formula:**
+                - Confidence = 1 / (1 + Coefficient of Variation)
+                - Coefficient of Variation = Standard Deviation / Mean of model predictions
+                
+                **What this means:**
+                - **High Confidence (60-100%)**: All models agree closely → reliable prediction
+                - **Medium Confidence (30-60%)**: Models somewhat agree → moderate reliability
+                - **Low Confidence (0-30%)**: Models disagree significantly → less reliable
+                
+                **Why confidence varies:**
+                1. **Market volatility**: In volatile markets, models may disagree more
+                2. **Data quality**: Better/more recent data → better agreement
+                3. **Market regime**: Different regimes favor different models
+                4. **Model training**: Well-trained models on similar data agree more
+                
+                **Tips:**
+                - Use predictions with >50% confidence for trading decisions
+                - Low confidence may indicate uncertain market conditions
+                - Consider collecting more recent data if confidence is consistently low
+                """)
+                
+                # Show individual model predictions if available
+                if hasattr(st.session_state.predictor, 'ensemble'):
+                    try:
+                        # Get recent features for prediction
+                        feature_cols = [col for col in st.session_state.predictor.features.columns 
+                                       if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']]
+                        recent_features = st.session_state.predictor.features[feature_cols].tail(60).values
+                        
+                        # Normalize
+                        X_mean = recent_features.mean(axis=0)
+                        X_std = recent_features.std(axis=0) + 1e-8
+                        recent_features = (recent_features - X_mean) / X_std
+                        
+                        # Convert to tensor
+                        import torch
+                        X_tensor = torch.FloatTensor(recent_features).unsqueeze(0).to(st.session_state.predictor.device)
+                        
+                        # Get individual predictions
+                        individual_preds = st.session_state.predictor.ensemble.predict(X_tensor, pred.regime)
+                        
+                        # Denormalize
+                        current_price = st.session_state.price_data['close'].iloc[-1]
+                        price_mean = st.session_state.price_data['close'].mean()
+                        price_std = st.session_state.price_data['close'].std() + 1e-8
+                        
+                        st.markdown("**Individual Model Predictions:**")
+                        model_prices = {}
+                        for name, pred_tensor in individual_preds.items():
+                            denorm_price = pred_tensor.item() * price_std + price_mean
+                            model_prices[name] = denorm_price
+                            change = ((denorm_price - current_price) / current_price) * 100
+                            st.write(f"  - **{name.replace('_', ' ').title()}**: ${denorm_price:,.2f} ({change:+.2f}%)")
+                        
+                        # Calculate agreement
+                        import numpy as np
+                        pred_values = list(model_prices.values())
+                        std_dev = np.std(pred_values)
+                        mean_price = np.mean(pred_values)
+                        cv = std_dev / (mean_price + 1e-8) if mean_price > 0 else 0
+                        
+                        st.markdown(f"""
+                        **Agreement Metrics:**
+                        - Standard Deviation: ${std_dev:,.2f}
+                        - Coefficient of Variation: {cv:.4f}
+                        - Price Range: ${min(pred_values):,.2f} - ${max(pred_values):,.2f}
+                        """)
+                    except Exception as e:
+                        st.caption(f"Could not display individual predictions: {e}")
             
             # Feature importance
             with st.expander("📊 Feature Importance (Top 10)"):
