@@ -76,6 +76,57 @@ python go_stock.py
 - [ ] 실시간 스트리밍 데이터 처리
 - [x] 웹 인터페이스 추가 (Streamlit)
 
+## 예측 정확도 개선 가이드 (실전 체크리스트)
+
+질문하신 것처럼 **더 방대한 데이터 + 다양한 지표 + 생성 방식 점검**은 핵심이 맞습니다.
+아래 순서로 진행하면 정확도를 실제로 개선하기 쉽습니다.
+
+### 1) 데이터 품질/정합성 먼저 점검
+
+- 가격/뉴스의 타임존을 UTC 기준으로 통일
+- 뉴스 게시 시각과 캔들 시각 정렬(look-ahead leakage 방지)
+- 결측치/중복/이상치(스파이크) 정제
+- 거래소별 가격 차이(스프레드) 반영
+
+### 2) 피처(지표) 확장
+
+- 온체인 데이터: 거래소 순유입, 활성 주소, 펀딩비
+- 파생시장 데이터: OI(미결제약정), 롱/숏 비율, basis
+- 거시 변수: 금리, 달러지수(DXY), 위험자산 지수
+- 뉴스 품질 개선: 출처 신뢰도 가중치, 이벤트 타입 분류(FOMC/ETF/해킹 등)
+
+### 3) 검증 방식 강화 (가장 중요)
+
+- 랜덤 분할 금지, **시계열 분할(walk-forward)** 사용
+- MAE/RMSE 외에 방향성 정확도(Directional Accuracy) 추적
+- 레짐(Bull/Bear/Volatile)별 성능을 분리 측정
+
+### 4) 모델링 개선
+
+- 학습 정규화 통계와 추론 정규화 통계를 일치
+- 검증 손실 기준 Early Stopping 적용
+- 단일 예측값보다 예측 구간(상/하단) 중심으로 의사결정
+
+## 이번 코드에서 반영된 정확도 개선 포인트
+
+- 학습/추론 정규화 통계 일치화 (데이터 누수 감소)
+- 학습 구간/검증 구간 분리 + Early Stopping 추가
+- 홀드아웃 구간 walk-forward 성능평가 메서드 추가 (`evaluate_walk_forward`)
+
+예시:
+
+```python
+predictor = AIStockPredictor('BTC-USD')
+predictor.collect_data(period='1y', interval='1h', news_days=30)
+predictor.train_models(epochs=30, batch_size=32, lr=1e-3)
+
+pred = predictor.predict()
+metrics = predictor.evaluate_walk_forward(test_ratio=0.2)
+
+print(pred.price, pred.confidence)
+print(metrics)  # mae, rmse, mape, directional_accuracy
+```
+
 ## 라이선스
 
 MIT License

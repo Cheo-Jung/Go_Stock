@@ -24,6 +24,7 @@ import logging
 from collections import deque
 import pickle
 from pathlib import Path
+import copy
 
 warnings.filterwarnings('ignore')
 
@@ -1646,6 +1647,14 @@ class AIStockPredictor:
         self.price_data = None
         self.features = None
         self.models_trained = False
+        self.sequence_length = 60
+        self.feature_cols = []
+        self.normalization_stats = {
+            'X_mean': None,
+            'X_std': None,
+            'y_mean': None,
+            'y_std': None
+        }
         
         logger.info(f"AI Stock Predictor initialized for {symbol} on {self.device}")
     
@@ -1705,31 +1714,47 @@ class AIStockPredictor:
         logger.info("Training models...")
         
         # Prepare data
-        feature_cols = [col for col in self.features.columns 
-                       if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']]
+        self.feature_cols = [col for col in self.features.columns 
+                             if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']]
         
-        X = self.features[feature_cols].values
+        X = self.features[self.feature_cols].values
         y = self.features['close'].values
         
         # Create sequences
-        sequence_length = 60
-        X_seq, y_seq = self._create_sequences(X, y, sequence_length)
+        X_seq, y_seq = self._create_sequences(X, y, self.sequence_length)
+        if len(X_seq) < 30:
+            raise ValueError("Insufficient sequence data for robust training")
+
+        split_idx = max(1, int(len(X_seq) * 0.8))
+        X_train, X_val = X_seq[:split_idx], X_seq[split_idx:]
+        y_train, y_val = y_seq[:split_idx], y_seq[split_idx:]
         
-        # Normalize
-        X_mean = X_seq.mean(axis=(0, 1))
-        X_std = X_seq.std(axis=(0, 1)) + 1e-8
-        X_seq = (X_seq - X_mean) / X_std
+        # Normalize using only training window statistics to avoid leakage
+        X_mean = X_train.mean(axis=(0, 1))
+        X_std = X_train.std(axis=(0, 1)) + 1e-8
+        X_train = (X_train - X_mean) / X_std
+        X_val = (X_val - X_mean) / X_std if len(X_val) > 0 else X_val
         
-        y_mean = y_seq.mean()
-        y_std = y_seq.std() + 1e-8
-        y_seq = (y_seq - y_mean) / y_std
+        y_mean = y_train.mean()
+        y_std = y_train.std() + 1e-8
+        y_train = (y_train - y_mean) / y_std
+        y_val = (y_val - y_mean) / y_std if len(y_val) > 0 else y_val
+
+        self.normalization_stats = {
+            'X_mean': X_mean,
+            'X_std': X_std,
+            'y_mean': y_mean,
+            'y_std': y_std
+        }
         
         # Convert to tensors
-        X_tensor = torch.FloatTensor(X_seq).to(self.device)
-        y_tensor = torch.FloatTensor(y_seq).to(self.device)
+        X_train_tensor = torch.FloatTensor(X_train).to(self.device)
+        y_train_tensor = torch.FloatTensor(y_train).to(self.device)
+        X_val_tensor = torch.FloatTensor(X_val).to(self.device) if len(X_val) > 0 else None
+        y_val_tensor = torch.FloatTensor(y_val).to(self.device) if len(y_val) > 0 else None
         
         # Initialize models
-        input_dim = X_seq.shape[2]
+        input_dim = X_train.shape[2]
         
         short_term_model = ShortTermModel(input_dim).to(self.device)
         medium_term_model = MediumTermModel(input_dim).to(self.device)
@@ -1744,7 +1769,16 @@ class AIStockPredictor:
         
         for name, model in models_to_train:
             logger.info(f"Training {name} model...")
-            self._train_model(model, X_tensor, y_tensor, epochs, batch_size, lr)
+            self._train_model(
+                model,
+                X_train_tensor,
+                y_train_tensor,
+                X_val_tensor,
+                y_val_tensor,
+                epochs,
+                batch_size,
+                lr
+            )
             self.ensemble.add_model(name, model, weight=1.0)
         
         self.models_trained = True
@@ -1758,15 +1792,21 @@ class AIStockPredictor:
             y_seq.append(y[i+seq_len])
         return np.array(X_seq), np.array(y_seq)
     
-    def _train_model(self, model: nn.Module, X: torch.Tensor, y: torch.Tensor,
+    def _train_model(self, model: nn.Module, X_train: torch.Tensor, y_train: torch.Tensor,
+                    X_val: Optional[torch.Tensor], y_val: Optional[torch.Tensor],
                     epochs: int, batch_size: int, lr: float):
         """Train a single model"""
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         criterion = nn.MSELoss()
         
-        dataset = torch.utils.data.TensorDataset(X, y)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        dataset = torch.utils.data.TensorDataset(X_train, y_train)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
         
+        best_state = None
+        best_val_loss = float('inf')
+        patience = 10
+        patience_counter = 0
+
         model.train()
         for epoch in range(epochs):
             total_loss = 0
@@ -1778,28 +1818,61 @@ class AIStockPredictor:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 total_loss += loss.item()
+
+            avg_loss = total_loss / len(dataloader)
+
+            if X_val is not None and y_val is not None and len(X_val) > 0:
+                model.eval()
+                with torch.no_grad():
+                    val_pred = model(X_val).squeeze()
+                    val_loss = criterion(val_pred, y_val).item()
+                model.train()
+
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state = copy.deepcopy(model.state_dict())
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= patience:
+                    logger.info(f"Early stopping at epoch {epoch + 1}, best val loss: {best_val_loss:.6f}")
+                    break
             
             if (epoch + 1) % 10 == 0:
-                avg_loss = total_loss / len(dataloader)
-                logger.info(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.6f}")
+                if X_val is not None and y_val is not None and len(X_val) > 0:
+                    logger.info(
+                        f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_loss:.6f}, Val Loss: {val_loss:.6f}"
+                    )
+                else:
+                    logger.info(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_loss:.6f}")
+
+        if best_state is not None:
+            model.load_state_dict(best_state)
     
     def predict(self, timeframe: TimeFrame = TimeFrame.MEDIUM_TERM) -> Prediction:
         """Make a prediction"""
         if not self.models_trained:
             raise ValueError("Models must be trained first")
         
-        if self.features is None or len(self.features) < 60:
+        if self.features is None or len(self.features) < self.sequence_length:
             raise ValueError("Insufficient data for prediction")
-        
+
+        if not self.feature_cols:
+            self.feature_cols = [
+                col for col in self.features.columns
+                if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']
+            ]
+
+        if self.normalization_stats['X_mean'] is None:
+            raise ValueError("Normalization statistics unavailable. Train models first.")
+
         # Get recent features
-        feature_cols = [col for col in self.features.columns 
-                       if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']]
+        recent_features = self.features[self.feature_cols].tail(self.sequence_length).values
         
-        recent_features = self.features[feature_cols].tail(60).values
-        
-        # Normalize
-        X_mean = recent_features.mean(axis=0)
-        X_std = recent_features.std(axis=0) + 1e-8
+        # Normalize with training statistics
+        X_mean = self.normalization_stats['X_mean']
+        X_std = self.normalization_stats['X_std']
         recent_features = (recent_features - X_mean) / X_std
         
         # Convert to tensor
@@ -1816,10 +1889,9 @@ class AIStockPredictor:
         
         # Denormalize
         current_price = self.price_data['close'].iloc[-1]
-        price_mean = self.price_data['close'].mean()
-        price_std = self.price_data['close'].std() + 1e-8
-        
-        predicted_price = ensemble_pred.item() * price_std + price_mean
+        y_mean = self.normalization_stats['y_mean']
+        y_std = self.normalization_stats['y_std']
+        predicted_price = ensemble_pred.item() * y_std + y_mean
         
         # Calculate confidence (based on model agreement)
         # Get normalized predictions from all models
@@ -1861,16 +1933,17 @@ class AIStockPredictor:
         confidence = max(0.0, min(1.0, confidence))
         
         # Calculate bounds (simplified)
-        std_dev = np.std([p.item() * price_std for p in predictions.values()])
+        std_dev = np.std([p.item() * y_std for p in predictions.values()])
         upper_bound = predicted_price + 2 * std_dev
         lower_bound = predicted_price - 2 * std_dev
         
         # Feature importance (placeholder - would use SHAP in production)
-        feature_importance = {name: 1.0 / len(feature_cols) for name in feature_cols[:10]}
+        feature_importance = {name: 1.0 / len(self.feature_cols) for name in self.feature_cols[:10]}
         
         # Model contributions
+        abs_sum = sum(abs(p.item()) for p in predictions.values()) + 1e-8
         model_contributions = {
-            name: abs(pred.item()) / sum(abs(p.item()) for p in predictions.values())
+            name: abs(pred.item()) / abs_sum
             for name, pred in predictions.items()
         }
         
@@ -1885,6 +1958,61 @@ class AIStockPredictor:
             feature_importance=feature_importance,
             model_contributions=model_contributions
         )
+
+    def evaluate_walk_forward(self, test_ratio: float = 0.2) -> Dict[str, float]:
+        """Evaluate one-step-ahead performance using a holdout tail window."""
+        if not self.models_trained:
+            raise ValueError("Models must be trained first")
+        if self.features is None:
+            raise ValueError("Features are not available")
+
+        if not self.feature_cols:
+            self.feature_cols = [
+                col for col in self.features.columns
+                if col not in ['datetime', 'open', 'high', 'low', 'close', 'volume']
+            ]
+
+        X = self.features[self.feature_cols].values
+        y = self.features['close'].values
+        X_seq, y_seq = self._create_sequences(X, y, self.sequence_length)
+
+        if len(X_seq) == 0:
+            raise ValueError("Insufficient sequence data for evaluation")
+
+        start_idx = max(1, int(len(X_seq) * (1 - test_ratio)))
+        X_eval = X_seq[start_idx:]
+        y_eval = y_seq[start_idx:]
+
+        X_eval = (X_eval - self.normalization_stats['X_mean']) / self.normalization_stats['X_std']
+        X_eval_tensor = torch.FloatTensor(X_eval).to(self.device)
+
+        preds = []
+        with torch.no_grad():
+            for i in range(len(X_eval_tensor)):
+                pred = self.ensemble.ensemble_predict(X_eval_tensor[i:i+1])
+                preds.append(pred.item())
+
+        y_mean = self.normalization_stats['y_mean']
+        y_std = self.normalization_stats['y_std']
+        pred_prices = np.array(preds) * y_std + y_mean
+        true_prices = np.array(y_eval)
+
+        mae = float(np.mean(np.abs(pred_prices - true_prices)))
+        rmse = float(np.sqrt(np.mean((pred_prices - true_prices) ** 2)))
+        mape = float(np.mean(np.abs((pred_prices - true_prices) / (true_prices + 1e-8))) * 100)
+
+        prev_closes = y[start_idx + self.sequence_length - 1: start_idx + self.sequence_length - 1 + len(true_prices)]
+        pred_direction = np.sign(pred_prices - prev_closes)
+        true_direction = np.sign(true_prices - prev_closes)
+        directional_accuracy = float(np.mean(pred_direction == true_direction))
+
+        return {
+            'samples': len(true_prices),
+            'mae': mae,
+            'rmse': rmse,
+            'mape': mape,
+            'directional_accuracy': directional_accuracy
+        }
     
     def save_system(self, path: str):
         """Save the entire system"""
@@ -1892,7 +2020,10 @@ class AIStockPredictor:
             'models': {name: model.state_dict() for name, model in self.ensemble.models.items()},
             'feature_scalers': self.feature_engineer.feature_scalers,
             'feature_names': self.feature_engineer.feature_names,
-            'symbol': self.symbol
+            'symbol': self.symbol,
+            'sequence_length': self.sequence_length,
+            'feature_cols': self.feature_cols,
+            'normalization_stats': self.normalization_stats
         }
         torch.save(save_dict, path)
         logger.info(f"System saved to {path}")
@@ -1918,8 +2049,10 @@ class AIStockPredictor:
         
         self.feature_engineer.feature_scalers = checkpoint['feature_scalers']
         self.feature_engineer.feature_names = checkpoint['feature_names']
+        self.sequence_length = checkpoint.get('sequence_length', 60)
+        self.feature_cols = checkpoint.get('feature_cols', checkpoint['feature_names'])
+        self.normalization_stats = checkpoint.get('normalization_stats', self.normalization_stats)
         self.models_trained = True
         
         logger.info(f"System loaded from {path}")
-
 
