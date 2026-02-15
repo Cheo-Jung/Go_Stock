@@ -69,7 +69,15 @@ def init_session_state():
         'symbol': 'BTC-USD',
         'selected_timeframe': TimeFrame.MEDIUM_TERM,
         'model_performance': {},
-        'prediction_history': []
+        'prediction_history': [],
+        'realtime_mode': False,
+        'realtime_interval_seconds': 60,
+        'realtime_market_interval': '1m',
+        'last_realtime_refresh': None,
+        'last_realtime_prediction_at': None,
+        'last_realtime_anchor_time': None,
+        'pending_realtime_predictions': [],
+        'realtime_results': []
     }
     
     for key, value in defaults.items():
@@ -77,6 +85,74 @@ def init_session_state():
             st.session_state[key] = value
 
 init_session_state()
+
+
+def refresh_realtime_data() -> float:
+    """Refresh market data and rebuild features using cached news for faster updates."""
+    predictor = st.session_state.predictor
+    price_data = predictor.market_agent.collect_price_data(
+        period='5d',
+        interval=st.session_state.realtime_market_interval
+    )
+    technical_data = predictor.technical_agent.calculate_indicators(price_data)
+    macro_data = {
+        'fear_greed': predictor.macro_agent.get_fear_greed_index(),
+        'dxy': predictor.macro_agent.get_dxy()
+    }
+    news_data = predictor.news_agent.news_cache if predictor.news_agent.news_cache else []
+    features = predictor.feature_engineer.create_features(price_data, news_data, technical_data, macro_data)
+
+    predictor.price_data = price_data
+    predictor.features = features
+    st.session_state.price_data = price_data
+    st.session_state.features = features
+    return float(price_data['close'].iloc[-1])
+
+
+def update_realtime_accuracy():
+    """Resolve pending predictions when new actual prices become available."""
+    if st.session_state.price_data is None or st.session_state.price_data.empty:
+        return
+
+    updated_pending = []
+    for pending in st.session_state.pending_realtime_predictions:
+        future_prices = st.session_state.price_data[
+            st.session_state.price_data['datetime'] > pending['anchor_time']
+        ]
+        if future_prices.empty:
+            updated_pending.append(pending)
+            continue
+
+        actual_price = float(future_prices['close'].iloc[0])
+        absolute_error = abs(actual_price - pending['predicted_price'])
+        pct_error = (absolute_error / actual_price) * 100 if actual_price else 0.0
+        accuracy_pct = max(0.0, 100.0 - pct_error)
+
+        st.session_state.realtime_results.append({
+            'predicted_at': pending['predicted_at'],
+            'resolved_at': datetime.now(),
+            'predicted_price': pending['predicted_price'],
+            'actual_price': actual_price,
+            'absolute_error': absolute_error,
+            'pct_error': pct_error,
+            'accuracy_pct': accuracy_pct
+        })
+
+    st.session_state.pending_realtime_predictions = updated_pending
+
+def schedule_realtime_refresh(refresh_ms: int = 5000):
+    """Force browser-side refresh so continuous mode runs without manual clicks."""
+    st.markdown(
+        f"""
+        <script>
+            setTimeout(function() {{
+                window.location.reload();
+            }}, {refresh_ms});
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+
 
 # Header
 st.markdown('<div class="main-header">🤖 AI Stock Predictor - Advanced Multi-Agent System</div>', unsafe_allow_html=True)
@@ -230,7 +306,27 @@ with st.sidebar:
     learning_rate = st.slider("Learning Rate", 0.0001, 0.01, 0.001, 0.0001, format="%.4f")
     
     st.divider()
-    
+
+    # Real-time system settings
+    st.subheader("⚡ Continuous Real-time")
+    realtime_interval_seconds = st.slider(
+        "Update Every (seconds)",
+        min_value=10,
+        max_value=300,
+        value=st.session_state.realtime_interval_seconds,
+        step=10,
+        help="How often the app refreshes market data and emits a new prediction"
+    )
+    st.session_state.realtime_interval_seconds = realtime_interval_seconds
+
+    realtime_market_interval = st.selectbox(
+        "Market Data Granularity",
+        options=["1m", "2m", "5m", "15m", "30m", "1h"],
+        index=["1m", "2m", "5m", "15m", "30m", "1h"].index(st.session_state.realtime_market_interval)
+        if st.session_state.realtime_market_interval in ["1m", "2m", "5m", "15m", "30m", "1h"] else 0,
+        help="Granularity used during continuous mode"
+    )
+    st.session_state.realtime_market_interval = realtime_market_interval
     # Prediction settings
     st.subheader("🔮 Prediction")
     timeframe_options = {
@@ -1726,7 +1822,80 @@ with tab4:
                     except Exception as e:
                         st.error(f"❌ Prediction error: {str(e)}")
                         st.exception(e)
-        
+
+        st.subheader("⚡ Continuous Real-time Prediction")
+        ctrl1, ctrl2, ctrl3 = st.columns([1, 1, 2])
+        with ctrl1:
+            if st.button("▶️ Start Continuous", use_container_width=True):
+                st.session_state.realtime_mode = True
+                st.session_state.last_realtime_refresh = None
+                st.session_state.last_realtime_anchor_time = None
+                st.success("Continuous mode started")
+        with ctrl2:
+            if st.button("⏹️ Stop Continuous", use_container_width=True):
+                st.session_state.realtime_mode = False
+                st.info("Continuous mode stopped")
+        with ctrl3:
+            mode_status = "🟢 Running" if st.session_state.realtime_mode else "⚪ Idle"
+            st.markdown(f"**Status:** {mode_status} | Interval: {st.session_state.realtime_interval_seconds}s")
+
+        if st.session_state.realtime_mode:
+            schedule_realtime_refresh(refresh_ms=5000)
+
+            now = datetime.now()
+            due = (
+                st.session_state.last_realtime_refresh is None or
+                (now - st.session_state.last_realtime_refresh).total_seconds() >= st.session_state.realtime_interval_seconds
+            )
+            if due:
+                try:
+                    refresh_realtime_data()
+                    update_realtime_accuracy()
+
+                    latest_anchor_time = st.session_state.price_data['datetime'].iloc[-1]
+                    if st.session_state.last_realtime_anchor_time == latest_anchor_time:
+                        st.info("No new market candle yet. Waiting for the next candle before scoring a new prediction.")
+                    else:
+                        realtime_prediction = st.session_state.predictor.predict(
+                            timeframe=st.session_state.selected_timeframe
+                        )
+                        st.session_state.prediction = realtime_prediction
+                        st.session_state.prediction_history.append({
+                            'timestamp': now,
+                            'prediction': realtime_prediction
+                        })
+                        st.session_state.pending_realtime_predictions.append({
+                            'predicted_at': now,
+                            'anchor_time': latest_anchor_time,
+                            'predicted_price': realtime_prediction.price
+                        })
+                        st.session_state.last_realtime_prediction_at = now
+                        st.session_state.last_realtime_anchor_time = latest_anchor_time
+                        st.success(f"Continuous prediction updated at {now.strftime('%H:%M:%S')}")
+
+                    st.session_state.last_realtime_refresh = now
+                except Exception as e:
+                    st.error(f"Continuous mode error: {e}")
+
+            if st.session_state.realtime_results:
+                realtime_df = pd.DataFrame(st.session_state.realtime_results[-20:])
+                avg_acc = realtime_df['accuracy_pct'].mean()
+                avg_err = realtime_df['pct_error'].mean()
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Resolved Predictions", len(realtime_df))
+                m2.metric("Average Accuracy", f"{avg_acc:.2f}%")
+                m3.metric("Average % Error", f"{avg_err:.2f}%")
+                chart_df = realtime_df.copy()
+                chart_df['predicted_at'] = pd.to_datetime(chart_df['predicted_at'])
+                st.line_chart(chart_df.set_index('predicted_at')[['accuracy_pct']])
+                st.dataframe(
+                    realtime_df[['predicted_at', 'predicted_price', 'actual_price', 'pct_error', 'accuracy_pct']].tail(10),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Waiting for enough new candles to score prediction accuracy...")
+
         st.divider()
         
         # Display prediction
