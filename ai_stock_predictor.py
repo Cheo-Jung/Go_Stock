@@ -2184,6 +2184,8 @@ class AIStockPredictor:
             self.ensemble.model_weights[name] = value / total
     
 
+ codex/create-real-time-stock/bitcoin-prediction-system-7fts8x
+
     def predict(self, timeframe: TimeFrame = TimeFrame.MEDIUM_TERM) -> Prediction:
         """Make a prediction"""
         if not self.models_trained:
@@ -2226,6 +2228,8 @@ class AIStockPredictor:
         y_mean = self.normalization_stats['y_mean']
         y_std = self.normalization_stats['y_std']
         predicted_price = ensemble_pred.item() * y_std + y_mean
+        previous_price = self.price_data['close'].iloc[-2] if len(self.price_data) > 1 else current_price
+        predicted_price = self._blend_with_momentum(predicted_price, current_price, previous_price)
         
         # Calculate confidence (based on model agreement)
         # Get normalized predictions from all models
@@ -2331,6 +2335,14 @@ class AIStockPredictor:
         y_mean = self.normalization_stats['y_mean']
         y_std = self.normalization_stats['y_std']
         pred_prices = np.array(preds) * y_std + y_mean
+        prev_prices = np.array(prev_close_seq[start_idx: start_idx + len(pred_prices)])
+        prev2_prices = np.array(y[start_idx + self.sequence_length - 2: start_idx + self.sequence_length - 2 + len(pred_prices)])
+        momentum_prices = prev_prices + 0.35 * (prev_prices - prev2_prices)
+        if self.using_fallback_data:
+            model_weight = 0.25
+        else:
+            model_weight = 0.8
+        pred_prices = model_weight * pred_prices + (1.0 - model_weight) * momentum_prices
         true_prices = np.array(y_eval)
 
         mae = float(np.mean(np.abs(pred_prices - true_prices)))
