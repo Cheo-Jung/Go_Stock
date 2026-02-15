@@ -1897,6 +1897,7 @@ class AIStockPredictor:
             'y_mean': None,
             'y_std': None
         }
+        self.model_validation_scores = {}
         
         logger.info(f"AI Stock Predictor initialized for {symbol} on {self.device}")
     
@@ -2021,6 +2022,10 @@ class AIStockPredictor:
             ('long_term', long_term_model)
         ]
         
+        self.model_validation_scores = {}
+        self.ensemble.models = {}
+        self.ensemble.model_weights = {}
+
         for name, model in models_to_train:
             logger.info(f"Training {name} model...")
             self._train_model(
@@ -2035,7 +2040,13 @@ class AIStockPredictor:
                 batch_size,
                 lr
             )
+            val_metrics = self._evaluate_model_on_validation(
+                model, X_val_tensor, y_val_tensor, prev_val_tensor, y_mean, y_std
+            )
+            self.model_validation_scores[name] = val_metrics
             self.ensemble.add_model(name, model, weight=1.0)
+
+        self._set_ensemble_weights_from_validation()
         
         self.models_trained = True
         logger.info("All models trained successfully")
@@ -2121,18 +2132,59 @@ class AIStockPredictor:
 
         if best_state is not None:
             model.load_state_dict(best_state)
+
+    def _evaluate_model_on_validation(
+        self,
+        model: nn.Module,
+        X_val: Optional[torch.Tensor],
+        y_val: Optional[torch.Tensor],
+        prev_val: Optional[torch.Tensor],
+        y_mean: float,
+        y_std: float
+    ) -> Dict[str, float]:
+        """Evaluate one trained model on validation slice for ensemble weighting."""
+        if X_val is None or y_val is None or len(X_val) == 0:
+            return {'rmse': 1.0, 'directional_accuracy': 0.5, 'score': 0.5}
+
+        model.eval()
+        with torch.no_grad():
+            pred = model(X_val).squeeze()
+
+        pred_prices = (pred.cpu().numpy() * y_std) + y_mean
+        true_prices = (y_val.cpu().numpy() * y_std) + y_mean
+
+        rmse = float(np.sqrt(np.mean((pred_prices - true_prices) ** 2)))
+
+        if prev_val is not None:
+            prev_prices = (prev_val.cpu().numpy() * y_std) + y_mean
+            pred_direction = np.sign(pred_prices - prev_prices)
+            true_direction = np.sign(true_prices - prev_prices)
+            directional_accuracy = float(np.mean(pred_direction == true_direction))
+        else:
+            directional_accuracy = 0.5
+
+        score = directional_accuracy / (1.0 + rmse)
+        return {
+            'rmse': rmse,
+            'directional_accuracy': directional_accuracy,
+            'score': float(score)
+        }
+
+    def _set_ensemble_weights_from_validation(self):
+        """Set ensemble weights based on model validation quality."""
+        if not self.model_validation_scores:
+            return
+
+        raw_weights = {}
+        for name, metrics in self.model_validation_scores.items():
+            raw_weights[name] = max(1e-4, metrics.get('score', 0.5))
+
+        total = sum(raw_weights.values()) + 1e-8
+        for name, value in raw_weights.items():
+            self.ensemble.model_weights[name] = value / total
     
 
-    def _blend_with_momentum(self, model_price: float, current_price: float, previous_price: float) -> float:
-        """Blend model output with momentum prior to improve directional stability."""
-        momentum_price = current_price + 0.35 * (current_price - previous_price)
-        if self.using_fallback_data:
-            # Synthetic fallback series are trend/autocorrelation-driven; rely more on momentum prior.
-            model_weight = 0.25
-        else:
-            model_weight = 0.8
-        momentum_weight = 1.0 - model_weight
-        return model_weight * model_price + momentum_weight * momentum_price
+ codex/create-real-time-stock/bitcoin-prediction-system-7fts8x
 
     def predict(self, timeframe: TimeFrame = TimeFrame.MEDIUM_TERM) -> Prediction:
         """Make a prediction"""
@@ -2183,9 +2235,14 @@ class AIStockPredictor:
         # Get normalized predictions from all models
         pred_values = [p.item() for p in predictions.values()]
         
+        validation_directional = np.mean([
+            metrics.get('directional_accuracy', 0.5)
+            for metrics in self.model_validation_scores.values()
+        ]) if self.model_validation_scores else 0.5
+
         if len(pred_values) < 2:
             # If only one model, use a default confidence
-            confidence = 0.5
+            confidence = 0.4 + 0.4 * validation_directional
         else:
             # Calculate coefficient of variation (CV) = std / mean
             # Lower CV = more agreement = higher confidence
@@ -2203,17 +2260,14 @@ class AIStockPredictor:
                 # Coefficient of variation (normalized by mean)
                 cv = std_abs / (mean_abs + 1e-8)
                 
-                # Convert CV to confidence: lower CV = higher confidence
-                # CV of 0 = perfect agreement = 100% confidence
-                # CV of 1 = std equals mean = 50% confidence
-                # CV > 1 = high disagreement = low confidence
-                confidence = 1.0 / (1.0 + cv)
+                agreement_confidence = 1.0 / (1.0 + cv)
+                confidence = 0.6 * agreement_confidence + 0.4 * validation_directional
                 
                 # Additional boost if predictions are in similar direction
                 signs = [1 if p > 0 else -1 for p in pred_values]
                 if len(set(signs)) == 1:
                     # All models agree on direction
-                    confidence = min(1.0, confidence * 1.2)
+                    confidence = min(1.0, confidence * 1.1)
         
         # Clamp to [0, 1]
         confidence = max(0.0, min(1.0, confidence))
@@ -2349,4 +2403,3 @@ class AIStockPredictor:
         self.models_trained = True
         
         logger.info(f"System loaded from {path}")
-
